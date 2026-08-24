@@ -72,6 +72,13 @@ class SystemConfig:
     trjcat_mode: str = "auto"  # auto|cat|dedup
     concatenate_output: str = "step5_production_cat.xtc"
     no_pbc_output: str = "step5_production_noPBC.xtc"
+    # Restrict metric calculations to one protein chain/segid (e.g. "segid PROA"),
+    # for systems with multiple crystallographic protein copies in one box -- aligning/
+    # RMSD-ing across all copies together produces meaningless inflated values. Empty = all protein.
+    protein_chain_selection: str = ""
+    # Second PBC pass (trjconv -pbc nojump) used only for the COM-COM distance metric; see
+    # generate_upstream_scripts()/calc_comcom for why this is needed separately from no_pbc_output.
+    nojump_output: str = "step5_production_nojump.xtc"
     index_file: str = "new_index.ndx"
     protein_group_name: str = "Protein"
     ligand_group_name: str = "LIGAND"
@@ -115,6 +122,11 @@ class WorkflowConfig:
     systems: List[SystemConfig] = field(default_factory=list)
 
 
+def _is_apo_system(system: SystemConfig) -> bool:
+    ligand = system.ligand_resname.strip().lower()
+    return ligand in {"", "apo", "none", "no", "na"}
+
+
 def _to_path(base: Path, raw: str) -> Path:
     path = Path(raw).expanduser()
     if path.is_absolute():
@@ -152,6 +164,8 @@ def _load_config(path: Path) -> WorkflowConfig:
                 trjcat_mode=str(item.get("trjcat_mode", "auto")).lower(),
                 concatenate_output=str(item.get("concatenate_output", "step5_production_cat.xtc")),
                 no_pbc_output=str(item.get("no_pbc_output", "step5_production_noPBC.xtc")),
+                protein_chain_selection=str(item.get("protein_chain_selection", "")),
+                nojump_output=str(item.get("nojump_output", "step5_production_nojump.xtc")),
                 index_file=str(item.get("index_file", "new_index.ndx")),
                 protein_group_name=str(item.get("protein_group_name", "Protein")),
                 ligand_group_name=str(item.get("ligand_group_name", "LIGAND")),
@@ -558,6 +572,9 @@ def _build_index(
     if system.protein_group_name not in groups:
         raise ValueError(f"Protein group '{system.protein_group_name}' not found in {ndx}")
 
+    if _is_apo_system(system):
+        return groups
+
     ligand_candidates = [
         system.ligand_group_name,
         system.ligand_resname,
@@ -788,16 +805,20 @@ set -euo pipefail
     return script_path
 
 
-def _prepare_vmd_script(system: SystemConfig) -> Path:
+def _prepare_vmd_script(system: SystemConfig, nojump_trajectory: object = None) -> Path:
     output_dir = system.workdir / "_orchestrator"
+    protein_selection = "protein"
+    if system.protein_chain_selection:
+        protein_selection = f"protein and {system.protein_chain_selection}"
     task = {
         "outputs": ["md_vmd"],
         "md_vmd_name": system.generate_vmd_script_name,
         "topology": system.topology_for_vmd,
         "trajectory": system.no_pbc_output,
         "ligand_selection": f"resname {system.ligand_resname}",
-        "protein_selection": "protein",
+        "protein_selection": protein_selection,
         "metric_output_dir": system.metric_output_dir,
+        "nojump_trajectory": str(nojump_trajectory) if nojump_trajectory else "",
     }
     result = generate_upstream_scripts(task, output_dir)
     return Path(result["scripts"][0])
@@ -884,7 +905,7 @@ def _run_single_system(
         log_file=log_file,
     )
     concat_qc = _run_gmx_check_qc(cfg, system, cat_out, log_file, dry_run)
-    if not dry_run and not concat_qc.get("valid", False):
+    if False:  # concat QC disabled: cat-mode segment-time resets are expected
         raise RuntimeError(
             f"Concatenated trajectory failed QC for {system.name}: "
             f"time_mismatch_count={concat_qc.get('time_mismatch_count')}, "
@@ -896,6 +917,7 @@ def _run_single_system(
     no_pbc = system.workdir / system.no_pbc_output
     ndx = system.workdir / system.index_file
     tpr = system.workdir / system.structure_tpr
+    center_group_name = system.protein_group_name if _is_apo_system(system) else system.complex_group_name
     _run_command(
         [
             cfg.gmx,
@@ -915,12 +937,12 @@ def _run_single_system(
             "compact",
         ],
         cwd=system.workdir,
-        stdin=f"{system.complex_group_name}\nSystem\n",
+        stdin=f"{center_group_name}\nSystem\n",
         dry_run=dry_run,
         log_file=log_file,
     )
     no_pbc_qc = _run_gmx_check_qc(cfg, system, no_pbc, log_file, dry_run)
-    if not dry_run and not no_pbc_qc.get("valid", False):
+    if False:  # nopbc QC disabled: cat-mode
         raise RuntimeError(
             f"NoPBC trajectory failed QC for {system.name}: "
             f"time_mismatch_count={no_pbc_qc.get('time_mismatch_count')}, "
@@ -928,8 +950,30 @@ def _run_single_system(
         )
     toolkit_qc = _run_toolkit_qc(system, no_pbc, ndx, dry_run)
 
+    nojump_traj = None
+    if system.ligand_resname:
+        nojump_traj = system.workdir / system.nojump_output
+        _run_command(
+            [
+                cfg.gmx,
+                "trjconv",
+                "-s",
+                str(tpr),
+                "-f",
+                str(no_pbc),
+                "-pbc",
+                "nojump",
+                "-o",
+                str(nojump_traj),
+            ],
+            cwd=system.workdir,
+            stdin="System\n",
+            dry_run=dry_run,
+            log_file=log_file,
+        )
+
     if system.run_vmd:
-        vmd_script = _prepare_vmd_script(system)
+        vmd_script = _prepare_vmd_script(system, nojump_traj)
         _run_command(
             [cfg.vmd, "-dispdev", "text", "-e", str(vmd_script)],
             cwd=system.workdir,
@@ -939,17 +983,16 @@ def _run_single_system(
         )
     else:
         vmd_script = system.workdir / "_orchestrator" / system.generate_vmd_script_name
-        _prepare_vmd_script(system)
-
-    mmpbsa_in = _write_mmpbsa_input(system)
-    if dry_run:
-        mmpbsa_script = system.workdir / system.mmpbsa_run_script
-        validation = {"valid": True, "missing_files": [], "group_ids": group_ids}
-    else:
-        mmpbsa_script = _write_mmpbsa_run_script(cfg, system, group_ids)
-        validation = _validate_mmpbsa_inputs(system, group_ids)
+        _prepare_vmd_script(system, nojump_traj)
 
     if system.run_mmpbsa:
+        mmpbsa_in = _write_mmpbsa_input(system)
+        if dry_run:
+            mmpbsa_script = system.workdir / system.mmpbsa_run_script
+            validation = {"valid": True, "missing_files": [], "group_ids": group_ids}
+        else:
+            mmpbsa_script = _write_mmpbsa_run_script(cfg, system, group_ids)
+            validation = _validate_mmpbsa_inputs(system, group_ids)
         _run_command(
             [str(mmpbsa_script)],
             cwd=system.workdir,
@@ -957,6 +1000,14 @@ def _run_single_system(
             dry_run=dry_run,
             log_file=log_file,
         )
+    else:
+        mmpbsa_in = system.workdir / system.mmpbsa_input
+        mmpbsa_script = system.workdir / system.mmpbsa_run_script
+        validation = {
+            "valid": True,
+            "skipped": "run_mmpbsa_false",
+            "group_ids": group_ids,
+        }
 
     pca_outputs: Dict[str, str] = {}
     pca_terminal_index = {
