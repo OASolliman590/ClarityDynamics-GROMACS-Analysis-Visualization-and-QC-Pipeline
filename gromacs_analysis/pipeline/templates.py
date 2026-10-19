@@ -52,6 +52,11 @@ md:
     smoothing_window: 3
     stable_run: 3
     max_terminal_fraction: 0.25
+  convert_units: true        # .xvg values declared in nm / nm^2 are converted to the axis unit (Å / Å^2)
+  stability:                 # equilibration detection; trims time series, writes data/equilibration.json
+    enabled: false
+    method: "chodera"        # chodera (max effective sample size) | window (legacy std/slope rule)
+    metric: "rmsd_prot"
   systems:
     - name: "LigandA"
       dir_pattern: "HOLO_LigandA_{}"
@@ -110,6 +115,7 @@ mmpbsa:
   compare_binding_key: "TOTAL"
   compare_components: false
   incomplete_replicates_policy: "warn"  # ignore|warn|error
+  # start_frame: 251          # drop earlier frames from frame-level (CSV) results; see md/data/equilibration.json
   require_decomp_replicates: false
   # compare_component_order: ["ΔVDWAALS", "ΔEEL", "ΔEGB", "ΔESURF", "ΔGGAS", "ΔGSOLV"]
   systems:
@@ -202,6 +208,28 @@ pca_batch:
     - name: "LigandB"
       dir_name: "LigandB_PCA"
   output_subdir_pattern: "output_{name}"
+
+# Joint PCA: all systems fitted together and projected on ONE set of eigenvectors,
+# with RMSIP subspace overlap between systems (quantitative cross-system comparison).
+pca_joint:
+  enabled: false
+  base_dir: "./1-MD/analysis"
+  output_dir: "./analysis_outputs/pca_joint"
+  selection: "protein and name CA"   # must select the same atoms in every system
+  n_components: 10
+  n_overlap: 10
+  stride: 10
+  # max_frames_per_system: 2000
+  auto_discover:
+    pattern: "HOLO_{ligand}_{rep}"
+    topology: "step3_input.psf"
+    trajectory: "step5_production_noPBC.xtc"
+  systems:
+    - name: "APO"
+      is_apo: true
+      topology: "./1-MD/analysis/APO_1/step3_input.psf"
+      trajectories:
+        - "./1-MD/analysis/APO_1/step5_production_noPBC.xtc"
 
 # Cross-ligand PCA comparison
 pca_compare:
@@ -431,6 +459,9 @@ ttclust_batch:
 ranking:
   enabled: false
   output_dir: "./analysis_outputs/ranking"
+  n_bootstrap: 2000          # rank probabilities and pairwise P(A better than B); 0 disables
+  seed: 0
+  # exclude_systems: ["Reference"]   # APO systems of the md stages and "APO" are always excluded
   # md_stats_file: "./analysis_outputs/md_compare/statistics_summary.csv"
   # mmpbsa_data_dir: "./analysis_outputs/mmpbsa/data"
   # distance_summary_file: "./analysis_outputs/distance_compare/data/distance_compare_summary.csv"

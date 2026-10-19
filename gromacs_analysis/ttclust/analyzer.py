@@ -16,7 +16,7 @@ import pandas as pd
 import plotly.graph_objects as go
 
 from .config import TTClustConfig
-from ..utils.figure_export import scaled_height, scaled_width, write_static
+from ..utils.figure_export import StaticExportUnavailable, scaled_height, scaled_width, write_static
 from ..utils.palette import categorical
 
 logger = logging.getLogger(__name__)
@@ -231,6 +231,9 @@ class TTClustAnalyzer:
                     write_static(fig, path, fmt, pc.width, pc.height, pc.scale)
                 written.append(path)
             except Exception as exc:
+                if isinstance(exc, StaticExportUnavailable):
+                    logger.debug("Static export unavailable; skipped %s", path)
+                    continue
                 logger.warning("Could not save %s: %s", path, exc)
         return written
 

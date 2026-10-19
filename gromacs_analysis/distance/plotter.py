@@ -14,7 +14,7 @@ import plotly.io as pio
 
 from .config import DistanceConfig
 from ..utils.mpl_fallback import init_matplotlib
-from ..utils.figure_export import write_static
+from ..utils.figure_export import StaticExportUnavailable, write_static
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +120,9 @@ class DistancePlotter:
                     if self._save_svg_fallback(file_path, fallback):
                         logger.info(f"Saved SVG via matplotlib fallback: {file_path}")
                         continue
+                if isinstance(exc, StaticExportUnavailable):
+                    logger.debug("Static export unavailable; skipped %s", file_path)
+                    continue
                 logger.error(f"Error saving {fmt} plot {file_path}: {exc}")
 
     def _save_svg_fallback(self, file_path: Path, fallback: Dict) -> bool:
@@ -382,6 +385,9 @@ class DistanceComparisonPlotter:
                     if self._save_svg_fallback(file_path, fallback):
                         logger.info(f"Saved SVG via matplotlib fallback: {file_path}")
                         continue
+                if isinstance(exc, StaticExportUnavailable):
+                    logger.debug("Static export unavailable; skipped %s", file_path)
+                    continue
                 logger.error(f"Error saving {fmt} plot {file_path}: {exc}")
 
     def _save_svg_fallback(self, file_path: Path, fallback: Dict) -> bool:

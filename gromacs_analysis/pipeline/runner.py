@@ -18,6 +18,7 @@ from ..ttclust import TTClustAnalyzer
 from ..qc import QCAnalyzer
 from .cache import compute_signature, should_skip, save_cache
 from .utils import run_utils_tasks
+from ..utils.report import write_run_report
 
 logger = logging.getLogger(__name__)
 
@@ -166,9 +167,22 @@ def run_pipeline(config: PipelineConfig, continue_on_error: bool = False) -> Dic
             logger.error(f"Stage '{name}' failed: {exc}")
             results[name] = {"success": False, "error": str(exc)}
             if not continue_on_error:
+                _write_report(config, results)
                 raise
 
+    report = _write_report(config, results)
+    if report is not None:
+        results["_report"] = str(report)
     return results
+
+
+def _write_report(config: PipelineConfig, results: Dict[str, Any]):
+    """Write the run report; a report failure never fails the pipeline."""
+    try:
+        return write_run_report(config, results)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"Could not write run report: {exc}")
+        return None
 
 
 def _collect_stage_files(stage_name: str, config: Any) -> List[Path]:

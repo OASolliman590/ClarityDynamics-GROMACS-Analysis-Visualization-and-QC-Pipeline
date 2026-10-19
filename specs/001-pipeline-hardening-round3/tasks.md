@@ -135,40 +135,40 @@ behaviour, so each story starts with a failing test that has a known answer.
 
 ## Phase 11: User Story 9 - Export availability (P2)
 
-- [ ] T031 [P] [US9] Write tests in `tests/test_round3_engineering.py`: when the simulated exporter raises a Chrome error, ten saves log exactly one warning and later calls raise `StaticExportUnavailable` immediately; the MD plotter still writes HTML and the matplotlib SVG fallback.
-- [ ] T032 [US9] Make the plotter save loops in `gromacs_analysis/md/plotter.py`, `gromacs_analysis/pca/plotter.py`, `gromacs_analysis/pca/compare.py`, `gromacs_analysis/mmpbsa/plotter.py`, `gromacs_analysis/distance/plotter.py`, `gromacs_analysis/prolif/plotter.py` and `gromacs_analysis/ttclust/analyzer.py` treat `StaticExportUnavailable` as a quiet fallback (debug log) instead of an error.
+- [X] T031 [P] [US9] Write tests in `tests/test_round3_engineering.py`: when the simulated exporter raises a Chrome error, ten saves log exactly one warning and later calls raise `StaticExportUnavailable` immediately; the MD plotter still writes HTML and the matplotlib SVG fallback.
+- [X] T032 [US9] Make the plotter save loops in `gromacs_analysis/md/plotter.py`, `gromacs_analysis/pca/plotter.py`, `gromacs_analysis/pca/compare.py`, `gromacs_analysis/mmpbsa/plotter.py`, `gromacs_analysis/distance/plotter.py`, `gromacs_analysis/prolif/plotter.py` and `gromacs_analysis/ttclust/analyzer.py` treat `StaticExportUnavailable` as a quiet fallback (debug log) instead of an error.
 
 ---
 
 ## Phase 12: User Story 10 - End-to-end trajectory test (P2)
 
-- [ ] T033 [US10] In `tests/test_end_to_end_trajectory.py`, build a small protein (two chains of glycine-like residues with CA) plus a ligand residue and write PDB+DCD (or XTC). Run `QCAnalyzer`, then `DistanceAnalyzer` on a drifting ligand (distance increasing), then `PCAJointAnalyzer` on two systems. Use `importorskip("MDAnalysis")`; run ProLIF only if importable.
+- [X] T033 [US10] In `tests/test_end_to_end_trajectory.py`, build a small protein (two chains of glycine-like residues with CA) plus a ligand residue and write PDB+DCD (or XTC). Run `QCAnalyzer`, then `DistanceAnalyzer` on a drifting ligand (distance increasing), then `PCAJointAnalyzer` on two systems. Use `importorskip("MDAnalysis")`; run ProLIF only if importable.
 
 ---
 
 ## Phase 13: User Story 11 - Run report (P3)
 
-- [ ] T034 [P] [US11] Write tests in `tests/test_round3_engineering.py`: the report lists stages with status, QC warnings first, figure links relative, and a failed stage's error shown; it works when there are no figures.
-- [ ] T035 [US11] Implement `write_run_report(config, results, output_root)` in `gromacs_analysis/utils/report.py` and call it at the end of `run_pipeline` in `gromacs_analysis/pipeline/runner.py` (and on `continue_on_error`). Return the path in the results under `_report`.
+- [X] T034 [P] [US11] Write tests in `tests/test_round3_engineering.py`: the report lists stages with status, QC warnings first, figure links relative, and a failed stage's error shown; it works when there are no figures.
+- [X] T035 [US11] Implement `write_run_report(config, results, output_root)` in `gromacs_analysis/utils/report.py` and call it at the end of `run_pipeline` in `gromacs_analysis/pipeline/runner.py` (and on `continue_on_error`). Return the path in the results under `_report`.
 
 ---
 
 ## Phase 14: User Story 12 - Cleanup (P3)
 
-- [ ] T036 [P] [US12] Write tests in `tests/test_round3_engineering.py`:
+- [X] T036 [P] [US12] Write tests in `tests/test_round3_engineering.py`:
   - importing the moved names from `gromacs_analysis.pipeline.yaml_loader` still works;
   - the template YAML loads identically;
   - each legacy script module emits a `DeprecationWarning` when run as `__main__` (check the source contains the warning call).
-- [ ] T037 [US12] Move the template text to `gromacs_analysis/pipeline/templates.py`. Move `_batch_systems`, `_build_prolif_config`, `_build_prolif_batch_configs`, `_build_prolif_compare_config`, `_build_ttclust_config`, `_build_ttclust_batch_configs` and the `pca_joint` builder to `gromacs_analysis/pipeline/stage_builders.py`. Re-export them from `gromacs_analysis/pipeline/yaml_loader.py`.
-- [ ] T038 [P] [US12] Add a `DeprecationWarning` and a stderr notice naming `gromacs-md` / `gromacs-pipeline` to `md_analysis_base.py`, `holo_md_analysis.py` and `apo_md_analysis.py`.
+- [X] T037 [US12] Move the template text to `gromacs_analysis/pipeline/templates.py`. Move `_batch_systems`, `_build_prolif_config`, `_build_prolif_batch_configs`, `_build_prolif_compare_config`, `_build_ttclust_config`, `_build_ttclust_batch_configs` and the `pca_joint` builder to `gromacs_analysis/pipeline/stage_builders.py`. Re-export them from `gromacs_analysis/pipeline/yaml_loader.py`.
+- [X] T038 [P] [US12] Add a `DeprecationWarning` and a stderr notice naming `gromacs-md` / `gromacs-pipeline` to `md_analysis_base.py`, `holo_md_analysis.py` and `apo_md_analysis.py`.
 
 ---
 
 ## Phase 15: Polish
 
-- [ ] T039 Update `SCIENTIFIC_VALIDITY.md` (move the resolved caveats into the fixed table), `USAGE.md`, `README.md` and both YAML templates (`gromacs_pipeline_template.yaml` and the in-code template) for the new keys and stage.
-- [ ] T040 Run `pytest -q` and render the joint PCA figures from synthetic data for a visual check.
-- [ ] T041 Mark the tasks complete in this file, then commit and push to `ccr-deb837be-iavlqx`.
+- [X] T039 Update `SCIENTIFIC_VALIDITY.md` (move the resolved caveats into the fixed table), `USAGE.md`, `README.md` and both YAML templates (`gromacs_pipeline_template.yaml` and the in-code template) for the new keys and stage.
+- [X] T040 Run `pytest -q` and render the joint PCA figures from synthetic data for a visual check.
+- [X] T041 Mark the tasks complete in this file, then commit and push to `ccr-deb837be-iavlqx`.
 
 ---
 

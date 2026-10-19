@@ -93,7 +93,7 @@ class DistanceComparisonAnalyzer:
                     show_std=self.config.show_std
                 )
 
-                name = f"distance_compare_{label}"
+                name = f"distance_compare_{str(label).replace(':', '_')}"
                 self.plotter.save_plot(
                     fig,
                     plots_dir,
@@ -374,7 +374,7 @@ class DistanceComparisonAnalyzer:
             data[f"{safe_name}_std"] = stats["std"]
 
         df = pd.DataFrame(data)
-        csv_path = data_dir / f"distance_compare_{label}.csv"
+        csv_path = data_dir / f"distance_compare_{str(label).replace(':', '_')}.csv"
         df.to_csv(csv_path, index=False)
         return csv_path
 

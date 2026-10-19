@@ -170,6 +170,41 @@ Recommended inputs:
 - MMPBSA QC-aware summaries
 - distance compare summaries
 
+### Use Case J: Joint PCA, Units, Equilibration and Ranking Uncertainty
+
+- **Joint PCA** (`pca_joint`): every system's Cα trajectory is fitted to one reference and
+  analysed together, so all systems share the same PC axes. Use the same `auto_discover`
+  block as `prolif_batch`, or list `systems` (mark APO with `is_apo: true`). The stage writes:
+  - `joint_projection_12` (all systems on shared PC1–PC2);
+  - `joint_density_12`;
+  - `rmsip_heatmap` (subspace overlap, 1 = identical motions);
+  - `joint_scree`;
+  - per-system projection CSVs.
+
+  It needs MDAnalysis but not GROMACS.
+- **Units**: `.xvg` files that declare nm or nm² are converted to the axis unit (Å/Å²)
+  automatically. The `Value_Unit_*` columns of `statistics_summary.csv` show what was done.
+  Set `md.convert_units: false` to disable this.
+- **Equilibration**: `md.stability.enabled: true` (method `chodera`) detects the production
+  start per system and writes `data/equilibration.json`. Pass its start frame to
+  `mmpbsa.start_frame` and to the VMD helper's `rmsf_first_frame`, so all metrics use the
+  same window.
+- **Ranking uncertainty**: `ranking` adds these outputs:
+  - `P_rank1`, `median_rank` and the 95% rank interval for each ligand;
+  - `rank_pairwise.csv` with P(A better than B), from `n_bootstrap` resamples of the
+    replicate means (or mean ± SEM).
+
+  APO and other reference systems are excluded and listed in `excluded_systems.csv`.
+- **Protein–ligand H-bonds**: the VMD helper writes `hbonds_lig_.dat`, plus
+  `hbonds_lig_<name>.dat` per listed ligand. The MD stage plots them as `hbonds_lig`.
+- **Multi-chain distances**: give residues as `"A:45"`. A bare number found in several chains
+  is reported once per chain, with a warning.
+- **Run report**: every pipeline run writes `<output_root>/report.html`. It shows QC warnings
+  first, then each stage with its status, figures and key tables.
+- **Static images**: if Kaleido cannot find a browser, the pipeline logs one warning with the
+  fix (`plotly_get_chrome` or `BROWSER_PATH`). It keeps writing interactive HTML and falls back
+  to matplotlib for SVG where it can.
+
 ## 3) Recommended Stage Recipes
 
 ### Conservative full scientific workflow

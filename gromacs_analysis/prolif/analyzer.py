@@ -104,7 +104,8 @@ class ProlifAnalyzer:
                     )
                 self._save_plot(fig, plots_dir, "lignetwork")
             except Exception as exc:
-                logger.warning(f"Failed to generate lignetwork plot: {exc}")
+                hint = " (install IPython: pip install ipython)" if "IPython" in str(exc) else ""
+                logger.warning(f"Failed to generate lignetwork plot: {exc}{hint}")
 
         if "tanimoto" in self.config.outputs:
             self._save_tanimoto(first_fp, first_df, plots_dir)
@@ -189,7 +190,7 @@ class ProlifAnalyzer:
             )
         out = (
             occupancy_df
-            .groupby(["Interaction", "Residue"], as_index=False)["Occupancy"]
+            .groupby(["Interaction", "Residue"])["Occupancy"]
             .agg(["mean", "std", "count"])
             .reset_index()
             .rename(

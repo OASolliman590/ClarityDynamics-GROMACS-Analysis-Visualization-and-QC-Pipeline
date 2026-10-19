@@ -29,6 +29,13 @@ robustness.
 | 17 | Minor | `pca` | Comparison plots overlay projections, each computed on its own eigenvectors, as if they shared axes. | Added a log warning and an on-plot annotation. See the caveats below. |
 | 18 | Minor | upstream VMD | Rg used a mass-weighted centre with an unweighted sum. | Rg is now fully mass-weighted, consistent with `gmx gyrate`. |
 | 19 | Minor | `md` | The H-bond y-axis was labelled "Change in the number of bonds". | Relabelled "Number of hydrogen bonds". |
+| 20 | Major | `pca` | Cross-system PCA overlays compared axes from separate per-system analyses. | New `pca_joint` stage: all systems are fitted to one reference, analysed together and projected on shared eigenvectors, with RMSIP overlap between systems (`specs/001-pipeline-hardening-round3`). |
+| 21 | Major | `md` | Values in nm (native GROMACS `.xvg`) were labelled Å. | Units declared in `.xvg` headers are converted to the axis unit (nm→Å ×10, nm²→Å² ×100) and recorded in `statistics_summary.csv` (`Value_Unit_*`). |
+| 22 | Major | `md`, `mmpbsa`, VMD | Equilibration used unit-dependent std/slope thresholds, and RMSF and MM/PBSA could not use the same window. | `stability.method: chodera` (default when enabled) picks the start with maximum effective sample size and writes `data/equilibration.json`. `mmpbsa.start_frame` and the VMD `rmsf_first_frame` apply the same window. |
+| 23 | Major | `ranking` | Rankings were point estimates, and APO could be ranked as a ligand. | Bootstrap rank probabilities, rank intervals and pairwise P(A better than B). Reference systems are excluded (`excluded_systems.csv`). |
+| 24 | Major | `distance` | Residues with the same number in different chains were merged. | Residues are keyed by (chain, number). `"A:45"` identifiers are accepted, and an ambiguous bare number warns and reports each chain. |
+| 25 | Minor | `pca` | On a flat RMSF core (MAD = 0), the threshold fell back to the SD, which the termini themselves inflated, so termini were under-trimmed. | IQR-based fallback scale. |
+| 26 | Minor | VMD, `md` | Only intra-protein H-bonds were counted. | Protein–ligand H-bonds (`hbonds_lig`, per ligand in multi-ligand complexes). |
 
 ## Remaining methodological caveats
 
@@ -38,21 +45,20 @@ These are matters of experimental design. Code alone cannot resolve them.
    (`SEM` with `SEM_Method = between_replicates`). With one trajectory, the
    block-averaged SEM only reflects sampling within that run. It cannot detect a
    trajectory trapped in one basin. Use ≥3 independent replicates (different
-   initial velocities) for any comparative claim.
-2. **Equilibration.** Statistics include every frame unless the `stability` window is
-   enabled or the inputs are already trimmed. Prefer to discard equilibration
-   explicitly upstream (`gmx ... -b <t>`), and recompute RMSF and MM/PBSA over the
-   same window as the other metrics.
-3. **Units.** The VMD helper writes Å. Native GROMACS `.xvg` outputs use nm. Metric
-   y-labels default to Å, so check the source of each file or set `ylabel`
-   explicitly.
-4. **PCA across systems.** Each system's PCs are separate bases with arbitrary
-   sign. For quantitative comparison, fit all trajectories to one reference,
-   concatenate them (`gmx trjcat -cat`), run a single `gmx covar`, and project every
-   system onto those eigenvectors. Report subspace overlap (RMSIP,
-   `gmx anaeig -over`) instead of comparing PC1 vs PC1. A cosine content near 1 for
-   the first PCs indicates random-diffusion-like, unconverged sampling. Gibbs free
-   energy landscapes from `gmx sham` are only meaningful for converged sampling.
+   initial velocities) for any comparative claim. Bootstrap rank probabilities are
+   only as good as the replicates behind them.
+2. **Equilibration.** Statistics include every frame unless `md.stability` is enabled
+   or the inputs are already trimmed. When it is enabled, reuse the start written to
+   `data/equilibration.json` for RMSF (`rmsf_first_frame`) and MM/PBSA
+   (`start_frame`) so every quantity covers the same window.
+3. **Units of files without headers.** Plain `.dat` files declare no unit and are
+   taken as given (`Value_Unit_Status = assumed`). Make sure their source matches the
+   axis label.
+4. **PCA.** Use `pca_joint` for quantitative cross-system comparison. Per-system PCA
+   (`pca`, `pca_compare`) remains useful for each system's own motions only. A cosine
+   content near 1 for the first PCs indicates random-diffusion-like, unconverged
+   sampling. Gibbs free energy landscapes from `gmx sham` are only meaningful for
+   converged sampling.
 5. **MM/PBSA.** ΔTOTAL is an end-point estimate. It is useful for ranking congeneric
    ligands but not as an absolute affinity. The SEM printed by gmx_MMPBSA assumes
    uncorrelated frames. Interaction-entropy results depend strongly on the
@@ -60,13 +66,11 @@ These are matters of experimental design. Code alone cannot resolve them.
    σ > ~3.6 kcal/mol), so present them separately.
 6. **Composite ranking.** Averaging z-scores across heterogeneous metrics with only a
    handful of ligands is a heuristic for triage, not a statistical test. Inspect the
-   individual metrics and their uncertainties before drawing conclusions.
+   individual metrics, their uncertainties and the pairwise probabilities before
+   drawing conclusions.
 7. **PBC preprocessing.** Centre-of-mass metrics require whole molecules. Process
    trajectories with `gmx trjconv -pbc mol -center` (with the ligand kept with the
    protein) before computing COM, distance or interaction metrics.
-8. **Residue numbering.** The distance module keys residues by `resid`. In
-   multi-chain systems with repeated residue numbers, use a `residue_selection`
-   that includes the segment or chain.
-9. **Legacy scripts.** `md_analysis_base.py`, `holo_md_analysis.py` and
-   `apo_md_analysis.py` keep their original z-score outlier removal. Prefer the
-   `gromacs_analysis` package.
+8. **Legacy scripts.** `md_analysis_base.py`, `holo_md_analysis.py` and
+   `apo_md_analysis.py` are deprecated (they warn when run) and keep their original
+   z-score outlier removal. Use the `gromacs_analysis` package.

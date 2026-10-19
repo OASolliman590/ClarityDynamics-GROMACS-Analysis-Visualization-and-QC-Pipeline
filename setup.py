@@ -39,6 +39,7 @@ setup(
             'MDAnalysis>=2.0.0',
             'prolif>=2.0.0',
             'rdkit>=2022.9.1',
+            'ipython',  # ProLIF ligand network rendering
         ],
         'clustering': [
             'scikit-learn>=1.0.0',
@@ -50,6 +51,7 @@ setup(
             'MDAnalysis>=2.0.0',
             'prolif>=2.0.0',
             'rdkit>=2022.9.1',
+            'ipython',
             'scikit-learn>=1.0.0',
             'seaborn>=0.11.0',
         ],

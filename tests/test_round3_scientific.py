@@ -39,12 +39,17 @@ def test_kabsch_fit_removes_rotation_and_translation():
 
 
 def test_joint_pca_recovers_displacement_on_shared_axes():
-    from gromacs_analysis.pca.joint import joint_pca
+    from gromacs_analysis.pca.joint import iterative_fit, joint_pca
 
-    result = joint_pca(_synthetic_systems(), n_components=5, n_overlap=3)
+    systems = _synthetic_systems()
+    result = joint_pca(systems, n_components=5, n_overlap=3)
+    # SC-001: PC1 is the displacement between the systems in the common fitted frame.
+    fitted = iterative_fit(systems, iterations=2)
+    direction = (fitted["LigA"].mean(axis=0) - fitted["APO"].mean(axis=0)).ravel()
+    direction /= np.linalg.norm(direction)
+    assert abs(result.eigenvectors[:, 0] @ direction) >= 0.95
     pc1 = result.eigenvectors[:, 0].reshape(-1, 3)
-    # PC1 is dominated by atom 0; after fitting the direction is shared with small rigid corrections.
-    assert np.linalg.norm(pc1[0]) ** 2 > 0.8
+    assert np.linalg.norm(pc1[0]) ** 2 > 0.8  # carried by the displaced atom
     proj = result.projections
     assert set(proj) == {"APO", "LigA"}
     separation = abs(proj["APO"][:, 0].mean() - proj["LigA"][:, 0].mean())

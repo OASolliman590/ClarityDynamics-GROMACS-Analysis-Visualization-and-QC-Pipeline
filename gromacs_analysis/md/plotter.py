@@ -28,7 +28,7 @@ from scipy import stats as scipy_stats
 
 from .config import MDConfig, AnalysisMetric
 from ..utils.mpl_fallback import init_matplotlib, rgb_to_mpl
-from ..utils.figure_export import write_static
+from ..utils.figure_export import StaticExportUnavailable, write_static
 from ..utils.palette import MUTED_HEX, TEXT_HEX, assign_system_colors, dash_for, rgba
 
 logger = logging.getLogger(__name__)
@@ -747,6 +747,9 @@ class MDPlotter:
                     if self._save_svg_fallback(filepath, fallback):
                         logger.info(f"Saved SVG via matplotlib fallback: {filepath}")
                         continue
+                if isinstance(e, StaticExportUnavailable):
+                    logger.debug("Static export unavailable; skipped %s", filepath)
+                    continue
                 logger.error(f"Could not save {filepath}: {e}")
     
     def create_all_plots(self, all_data: Dict) -> List[str]:

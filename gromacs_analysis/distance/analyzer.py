@@ -18,6 +18,11 @@ from .plotter import DistancePlotter
 logger = logging.getLogger(__name__)
 
 
+def _file_safe(label: str) -> str:
+    """Residue labels such as 'A:GLY4' as portable file names ('A_GLY4')."""
+    return str(label).replace(":", "_").replace("/", "_")
+
+
 class DistanceAnalyzer:
     """Run ligand-residue distance analysis."""
 
@@ -45,7 +50,7 @@ class DistanceAnalyzer:
         if self.config.per_residue_plots:
             for residue in residues:
                 fig = self.plotter.create_per_residue_plot(time, residue)
-                name = f"distance_{residue['label']}"
+                name = f"distance_{_file_safe(residue['label'])}"
                 self.plotter.save_plot(
                     fig,
                     plots_dir,
@@ -99,7 +104,7 @@ class DistanceAnalyzer:
                 "mean_distance": residue["mean"],
                 "std_distance": residue["std"],
             })
-            file_path = data_dir / f"distance_{residue['label']}.csv"
+            file_path = data_dir / f"distance_{_file_safe(residue['label'])}.csv"
             df.to_csv(file_path, index=False)
             saved.append(file_path)
 

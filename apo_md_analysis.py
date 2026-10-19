@@ -4,6 +4,18 @@ Enhanced Apo MD Analysis with modern visualization capabilities
 Processes .dat files from GROMACS simulations for protein-only systems
 """
 
+import sys as _sys
+import warnings as _warnings
+
+_DEPRECATION = (
+    "apo_md_analysis.py is deprecated and unmaintained: it keeps the old z-score outlier removal and lacks the "
+    "replicate statistics, unit handling and other fixes of the gromacs_analysis package. "
+    "Use `gromacs-md` or `gromacs-pipeline` instead (see USAGE.md)."
+)
+_warnings.warn(_DEPRECATION, DeprecationWarning, stacklevel=2)
+print("WARNING: " + _DEPRECATION, file=_sys.stderr)
+
+
 import argparse
 import logging
 import json

@@ -45,6 +45,10 @@ gromacs-orchestrate --help
 
 See [USAGE.md](./USAGE.md) for end-to-end use cases, stage combinations, expected outputs, and recommended run patterns.
 
+## Run Report
+
+Every pipeline run writes `<output_root>/report.html`, a single page that shows QC warnings first and then each stage's status, figures and key tables.
+
 ## Scientific Validity
 
 See [SCIENTIFIC_VALIDITY.md](./SCIENTIFIC_VALIDITY.md) for the statistical conventions (replicate SEM, block averaging), corrected defects, and methodological caveats to read before interpreting results.
@@ -87,7 +91,7 @@ gromacs_analysis/
 - `qc`
 - `md`, `md_batch`, `md_compare`
 - `mmpbsa`
-- `pca`, `pca_batch`, `pca_compare`
+- `pca`, `pca_batch`, `pca_compare`, `pca_joint`
 - `distance`, `distance_batch`, `distance_compare`
 - `interactions`, `interactions_batch`, `interactions_compare`
 - `prolif`, `prolif_batch`, `prolif_compare`
@@ -115,3 +119,9 @@ Older standalone scripts are archived in `../../_legacy_scripts/`. They are reta
 
 - Omar Ahmed Soliman (project author and maintainer)
 - Codex (AI engineering collaborator by OpenAI)
+
+## Development
+
+- Tests: `pip install -r requirements.txt pytest MDAnalysis && pytest -q` (CI runs them on every pull request).
+- Features are specified with [GitHub Spec Kit](https://github.com/github/spec-kit): project principles in
+  `.specify/memory/constitution.md`, feature specs, plans and task lists under `specs/`.

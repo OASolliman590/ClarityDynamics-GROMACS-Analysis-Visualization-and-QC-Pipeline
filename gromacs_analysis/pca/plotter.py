@@ -16,7 +16,7 @@ import plotly.io as pio
 
 from .config import PCAConfig
 from ..utils.mpl_fallback import init_matplotlib
-from ..utils.figure_export import write_static
+from ..utils.figure_export import StaticExportUnavailable, write_static
 from ..utils.palette import APO_HEX, MUTED_HEX, categorical, mix, rgba, single_hue_scale
 
 # Set default Plotly export settings.
@@ -457,6 +457,9 @@ class PCAPlotter:
                     if self._save_svg_fallback(file_path, fallback):
                         logger.info(f"Saved SVG via matplotlib fallback: {file_path}")
                         continue
+                if isinstance(e, StaticExportUnavailable):
+                    logger.debug("Static export unavailable; skipped %s", file_path)
+                    continue
                 logger.error(f"Error saving {fmt} plot {file_path}: {e}")
 
     def _save_svg_fallback(self, file_path: Path, fallback: Dict) -> bool:

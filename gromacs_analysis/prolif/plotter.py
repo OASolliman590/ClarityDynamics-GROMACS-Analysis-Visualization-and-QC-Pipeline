@@ -8,7 +8,7 @@ from typing import Iterable, Optional
 
 import plotly.graph_objects as go
 
-from ..utils.figure_export import write_static
+from ..utils.figure_export import StaticExportUnavailable, write_static
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +92,9 @@ class ProlifPlotter:
                         continue
                     except Exception:
                         pass
+                if isinstance(exc, StaticExportUnavailable):
+                    logger.debug("Static export unavailable; skipped %s", file_path)
+                    continue
                 logger.error(f"Error saving {fmt} plot {file_path}: {exc}")
 
     def save_matplotlib(self, fig, output_dir: Path, name: str, fmt: str = "svg") -> None:

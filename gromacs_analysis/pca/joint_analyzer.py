@@ -146,7 +146,7 @@ class PCAJointAnalyzer:
             color = self.colors[name]
             fig.add_trace(go.Scattergl(
                 x=proj[:, 0], y=proj[:, 1] if proj.shape[1] > 1 else np.zeros(len(proj)),
-                mode="markers", name=name, legendgroup=name,
+                mode="markers", name=name, legendgroup=name, showlegend=False,
                 marker=dict(size=4, color=rgba(color, 0.35)),
                 hovertemplate=f"{name}<br>frame %{{customdata}}<extra></extra>",
                 customdata=np.arange(len(proj)),
@@ -155,7 +155,7 @@ class PCAJointAnalyzer:
             proj = result.projections[name]
             fig.add_trace(go.Scatter(
                 x=[proj[:, 0].mean()], y=[proj[:, 1].mean() if proj.shape[1] > 1 else 0.0],
-                mode="markers", name=f"{name} mean", legendgroup=name, showlegend=False,
+                mode="markers", name=name, legendgroup=name, showlegend=True,
                 marker=dict(size=15, symbol="diamond", color=mix(self.colors[name], "#000000", 0.25),
                             line=dict(color="white", width=2)),
             ))
@@ -199,8 +199,8 @@ class PCAJointAnalyzer:
         size = max(420, 160 + 90 * len(names))
         return self._layout(
             fig,
-            f"Overlap of essential subspaces (RMSIP, first {k} PCs; 1 = identical motions)",
-            width=size + 160, height=size,
+            f"Essential-subspace overlap<br><sup>RMSIP over the first {k} PCs · 1 = identical dominant motions</sup>",
+            width=size + 160, height=size + 40,
         )
 
     def _scree_figure(self, result: JointPCAResult) -> go.Figure:
