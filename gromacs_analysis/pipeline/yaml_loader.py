@@ -10,7 +10,23 @@ import yaml
 
 from .config import PipelineConfig, PipelineStage
 from ..utils.palette import categorical
-from .discovery import discover_systems, normalise_ligands
+from .loader_utils import (  # noqa: F401 - re-exported for backward compatibility
+    _default_output_dir,
+    _is_prefixed_by_base,
+    _path_parts,
+    _resolve_path,
+    _resolve_stage_input_path,
+)
+from .stage_builders import (  # noqa: F401 - re-exported for backward compatibility
+    _batch_systems,
+    _build_pca_joint_config,
+    _build_prolif_batch_configs,
+    _build_prolif_compare_config,
+    _build_prolif_config,
+    _build_ttclust_batch_configs,
+    _build_ttclust_config,
+)
+from .templates import PIPELINE_TEMPLATE
 from ..md.config import MDConfig, SystemConfig, AnalysisMetric, PlotConfig, StabilityConfig, RMSFTerminalConfig
 from ..mmpbsa.config import MMPBSAConfig, MMPBSASystemConfig
 from ..pca.config import PCAConfig, PCASystemConfig, PCACompareConfig, FELConfig, ClusteringConfig
@@ -27,57 +43,6 @@ from ..distance.yaml_loader import load_yaml_config as load_distance_yaml
 
 logger = logging.getLogger(__name__)
 
-
-
-def _resolve_path(value: Optional[str], base_path: Path) -> Optional[Path]:
-    if not value:
-        return None
-    path = Path(value)
-    if not path.is_absolute():
-        path = (base_path / path).resolve()
-    return path
-
-
-def _path_parts(path: Path) -> tuple:
-    """Return normalized path parts without a leading './'."""
-    return tuple(part for part in path.parts if part not in ("", "."))
-
-
-def _is_prefixed_by_base(value: str, raw_base_dir: Optional[str]) -> bool:
-    """Return True when a relative value already includes the stage base_dir."""
-    if not raw_base_dir:
-        return False
-    value_path = Path(value)
-    base_path = Path(str(raw_base_dir))
-    if value_path.is_absolute() or base_path.is_absolute():
-        return False
-
-    value_parts = _path_parts(value_path)
-    base_parts = _path_parts(base_path)
-    if not base_parts or len(value_parts) < len(base_parts):
-        return False
-    return value_parts[:len(base_parts)] == base_parts
-
-
-def _resolve_stage_input_path(
-    value: str,
-    base_path: Path,
-    base_dir: Optional[Path],
-    raw_base_dir: Optional[str],
-) -> Path:
-    """
-    Resolve stage input files consistently.
-
-    Relative paths that already include the configured base_dir are resolved
-    from the YAML file location. Short paths such as "rep1/traj.xtc" are
-    resolved from the stage base_dir.
-    """
-    path = Path(value)
-    if path.is_absolute():
-        return path
-    if base_dir and not _is_prefixed_by_base(value, raw_base_dir):
-        return (base_dir / path).resolve()
-    return (base_path / path).resolve()
 
 
 def _apply_relative_paths(config: Any, base_path: Path) -> None:
@@ -113,28 +78,6 @@ def _assign_palette_if_needed(systems: List[SystemConfig], palette: Optional[Lis
     if all(s.color is None for s in holo_systems):
         for idx, sys in enumerate(holo_systems):
             sys.color = tuple(palette[idx % len(palette)])
-
-
-def _default_output_dir(stage: str, output_root: Optional[Path], base_dir: Optional[Path]) -> Optional[Path]:
-    if output_root:
-        return output_root / stage
-    if stage == "qc":
-        return Path("./output_qc")
-    if stage == "md":
-        return Path("./output")
-    if stage == "md_compare":
-        return Path("./output_md_compare")
-    if stage == "mmpbsa":
-        return Path("./output_mmpbsa")
-    if stage == "pca":
-        return base_dir / "PCA_Vis" if base_dir else None
-    if stage == "pca_compare":
-        return Path("./output_pca_compare")
-    if stage == "distance":
-        return Path("./output_distance")
-    if stage == "distance_compare":
-        return Path("./output_distance_compare")
-    return None
 
 
 def _build_md_config(data: Dict[str, Any], base_path: Path, defaults: Dict[str, Any]) -> MDConfig:
@@ -178,6 +121,7 @@ def _build_md_config(data: Dict[str, Any], base_path: Path, defaults: Dict[str, 
                     is_holo_only=m.get("is_holo_only", False),
                     data_format=m.get("data_format", "two_column"),
                     ligand=m.get("ligand"),
+                    unit=m.get("unit"),
                 )
             )
 
@@ -211,6 +155,8 @@ def _build_md_config(data: Dict[str, Any], base_path: Path, defaults: Dict[str, 
         slope_threshold=stability_data.get("slope_threshold", 0.01),
         min_points=stability_data.get("min_points", 100),
         apply_to_all_metrics=bool(stability_data.get("apply_to_all_metrics", True)),
+        method=stability_data.get("method", "chodera"),
+        n_candidates=int(stability_data.get("n_candidates", 100)),
     )
 
     sequence_topology = data.get("sequence_topology")
@@ -237,6 +183,7 @@ def _build_md_config(data: Dict[str, Any], base_path: Path, defaults: Dict[str, 
         outlier_threshold=data.get("outlier_threshold", data.get("analysis", {}).get("outlier_threshold")),
         ligands=data.get("ligands") or [],
         rmsf_terminals=RMSFTerminalConfig(**(data.get("rmsf_terminals") or {})),
+        convert_units=bool(data.get("convert_units", True)),
     )
 
 
@@ -311,6 +258,7 @@ def _build_mmpbsa_config(data: Dict[str, Any], base_path: Path, defaults: Dict[s
         compare_components=bool(data.get("compare_components", False)),
         compare_component_order=data.get("compare_component_order"),
         incomplete_replicates_policy=data.get("incomplete_replicates_policy", "warn"),
+        start_frame=data.get("start_frame"),
         require_decomp_replicates=bool(data.get("require_decomp_replicates", False)),
     )
 
@@ -474,6 +422,8 @@ def _parse_residue_config(residue_data: Any) -> Dict[str, Any]:
         for item in residue_data:
             if isinstance(item, int):
                 residue_ids.append(item)
+            elif isinstance(item, str) and ":" in item:
+                residue_ids.append(item.strip())  # chain-qualified, e.g. "A:45"
             elif isinstance(item, str):
                 digits = "".join(ch for ch in item if ch.isdigit())
                 if digits:
@@ -1068,321 +1018,12 @@ def _build_interaction_compare_config(
     )
 
 
-def _build_prolif_config(data: Dict[str, Any], base_path: Path, defaults: Dict[str, Any]) -> ProlifConfig:
-    raw_base_dir = data.get("base_dir") or defaults.get("data_root")
-    if not raw_base_dir:
-        raise ValueError("prolif config requires base_dir (or paths.data_root)")
-    base_dir = _resolve_path(raw_base_dir, base_path)
-
-    output_dir = data.get("output_dir") or _default_output_dir("prolif", defaults.get("output_root"), base_dir)
-    output_dir = _resolve_path(str(output_dir), base_path) if output_dir else None
-
-    protein_name = data.get("protein_name") or defaults.get("protein_name") or "Protein"
-    ligand_name = data.get("ligand_name") or "Ligand"
-
-    topology = data.get("topology")
-    if not topology:
-        raise ValueError("prolif config requires topology")
-    topology = _resolve_stage_input_path(topology, base_path, base_dir, raw_base_dir)
-
-    trajectories = data.get("trajectories", [])
-    if not trajectories:
-        raise ValueError("prolif config requires trajectories")
-    trajectories = [
-        _resolve_stage_input_path(p, base_path, base_dir, raw_base_dir)
-        for p in trajectories
-    ]
-
-    plot_data = data.get("plot_config", {})
-    barcode_cfg = data.get("barcode_config", {}) or {}
-    raw_figsize = barcode_cfg.get("figsize", data.get("barcode_figsize", [12.0, 4.0]))
-    if not isinstance(raw_figsize, (list, tuple)) or len(raw_figsize) != 2:
-        raise ValueError("prolif barcode figsize must be a 2-item list/tuple, e.g. [12, 4]")
-    barcode_figsize = (float(raw_figsize[0]), float(raw_figsize[1]))
-    plot_config = PlotConfig(
-        template=plot_data.get("template", "ggplot2"),
-        style=plot_data.get("style", "simple"),
-        width=plot_data.get("width", 1200),
-        height=plot_data.get("height", 600),
-        scale=plot_data.get("scale", 2),
-        font_family=plot_data.get("font_family", "Times New Roman"),
-        font_size=plot_data.get("font_size", 20),
-        colors={k: tuple(v) for k, v in plot_data.get("colors", {}).items()},
-        save_formats=plot_data.get("save_formats", ["html", "svg"]),
-    )
-
-    return ProlifConfig(
-        base_dir=base_dir,
-        output_dir=output_dir,
-        protein_name=protein_name,
-        ligand_name=ligand_name,
-        topology=topology,
-        trajectories=trajectories,
-        ligand_selection=data.get("ligand_selection", "resname UNK"),
-        protein_selection=data.get("protein_selection", "protein"),
-        interaction_types=data.get("interaction_types", None) or [],
-        vicinity_cutoff=data.get("vicinity_cutoff", 5.0),
-        stride=data.get("stride", 1),
-        n_jobs=data.get("n_jobs"),
-        save_pickle=bool(data.get("save_pickle", True)),
-        outputs=data.get("outputs", ["barcode", "lignetwork", "occupancy", "tanimoto"]),
-        lignetwork_display_all=bool(data.get("lignetwork_display_all", True)),
-        lignetwork_count_aware=bool(data.get("lignetwork_count_aware", True)),
-        lignetwork_kind=data.get("lignetwork_kind", "aggregate"),
-        lignetwork_threshold=float(data.get("lignetwork_threshold", 0.3)),
-        occupancy_top_n=int(data.get("occupancy_top_n", 25)),
-        barcode_n_frame_ticks=int(barcode_cfg.get("n_frame_ticks", data.get("barcode_n_frame_ticks", 10))),
-        barcode_residues_tick_location=barcode_cfg.get(
-            "residues_tick_location",
-            data.get("barcode_residues_tick_location", "top"),
-        ),
-        barcode_xlabel=barcode_cfg.get("xlabel", data.get("barcode_xlabel", "Frame")),
-        barcode_figsize=barcode_figsize,
-        barcode_dpi=int(barcode_cfg.get("dpi", data.get("barcode_dpi", 150))),
-        barcode_only_interacting_residues=bool(
-            barcode_cfg.get("only_interacting_residues", data.get("barcode_only_interacting_residues", True))
-        ),
-        barcode_min_interaction_frames=int(
-            barcode_cfg.get("min_interaction_frames", data.get("barcode_min_interaction_frames", 1))
-        ),
-        barcode_max_residues=(
-            int(barcode_cfg.get("max_residues", data.get("barcode_max_residues")))
-            if barcode_cfg.get("max_residues", data.get("barcode_max_residues")) is not None
-            else None
-        ),
-        plot_config=plot_config,
-    )
-
-
-def _batch_systems(stage_data: Dict[str, Any], base_path: Path, stage: str) -> List[Dict[str, Any]]:
-    """Explicit ``systems`` list, or systems found by ``auto_discover`` (one per ligand)."""
-    systems = list(stage_data.get("systems") or [])
-    auto = stage_data.get("auto_discover")
-    if auto:
-        root_value = auto.get("root") or stage_data.get("base_dir")
-        if not root_value:
-            raise ValueError(f"{stage}.auto_discover requires root (or stage base_dir)")
-        for key in ("pattern", "topology", "trajectory"):
-            if not auto.get(key):
-                raise ValueError(f"{stage}.auto_discover requires {key}")
-        known = {s.get("name") for s in systems}
-        enabled = stage_data.get("enabled", True)
-        try:
-            discovered = discover_systems(
-                _resolve_path(str(root_value), base_path),
-                auto["pattern"],
-                auto["topology"],
-                auto["trajectory"],
-                include=auto.get("include"),
-                exclude=auto.get("exclude"),
-            )
-        except ValueError as exc:
-            if enabled and not systems:
-                raise
-            if enabled:
-                logger.warning(f"{stage}: {exc}; using the explicit systems list only.")
-            discovered = []
-        # Explicit entries override discovered ones with the same name.
-        systems.extend(s for s in discovered if s["name"] not in known)
-    if not systems and stage_data.get("enabled", True):
-        raise ValueError(f"{stage} requires a systems list or auto_discover")
-    return systems
-
-
-def _build_prolif_batch_configs(stage_data: Dict[str, Any], base_path: Path, defaults: Dict[str, Any]) -> List[ProlifConfig]:
-    raw_base_dir = stage_data.get("base_dir") or defaults.get("data_root")
-    if not raw_base_dir:
-        raise ValueError("prolif_batch requires base_dir (or paths.data_root)")
-    base_dir = _resolve_path(raw_base_dir, base_path)
-    systems_data = _batch_systems({**stage_data, "base_dir": raw_base_dir}, base_path, "prolif_batch")
-
-    output_dir = stage_data.get("output_dir") or _default_output_dir("prolif_batch", defaults.get("output_root"), base_dir)
-    output_dir = _resolve_path(str(output_dir), base_path) if output_dir else None
-    output_pattern = stage_data.get("output_subdir_pattern", "output_{name}")
-
-    configs: List[ProlifConfig] = []
-    for sys_data in systems_data:
-        system_name = sys_data.get("ligand_name") or sys_data.get("name") or "Ligand"
-        sys_raw_base = str(sys_data.get("base_dir") or raw_base_dir)
-        ligands_spec = sys_data.get("ligands", stage_data.get("ligands"))
-        topology = sys_data.get("topology") or stage_data.get("topology")
-        topology_path = (
-            _resolve_stage_input_path(topology, base_path, _resolve_path(sys_raw_base, base_path), sys_raw_base)
-            if topology else None
-        )
-        ligands = normalise_ligands(
-            ligands_spec,
-            topology_path,
-            exclude=sys_data.get("ligand_exclude", stage_data.get("ligand_exclude", [])),
-        )
-        # One fingerprint run per ligand; a single ligand keeps the system name.
-        runs = ligands or [{"name": None, "selection": None}]
-        for lig in runs:
-            name = system_name if len(runs) == 1 or not lig["name"] else f"{system_name}_{lig['name']}"
-            batch_output = output_dir / output_pattern.format(name=name) if output_dir else None
-            cfg_data = {
-                **{k: v for k, v in stage_data.items() if k not in ("systems", "auto_discover", "ligands")},
-                **{k: v for k, v in sys_data.items() if k not in ("ligands", "directories")},
-                "base_dir": sys_raw_base,
-                "output_dir": str(batch_output) if batch_output else None,
-                "ligand_name": name,
-            }
-            if lig["selection"]:
-                cfg_data["ligand_selection"] = lig["selection"]
-            configs.append(_build_prolif_config(cfg_data, base_path, defaults))
-
-    return configs
-
-
-def _build_prolif_compare_config(
+def _build_ranking_config(
     stage_data: Dict[str, Any],
     base_path: Path,
     defaults: Dict[str, Any],
-    prolif_batch_configs: Optional[List[ProlifConfig]],
-) -> ProlifCompareConfig:
-    from_batch = bool(stage_data.get("from_prolif_batch", False))
-
-    if from_batch:
-        if not prolif_batch_configs:
-            raise ValueError("prolif_compare from_prolif_batch requires prolif_batch stage")
-        systems = prolif_batch_configs
-    elif stage_data.get("systems") or stage_data.get("auto_discover"):
-        systems = _build_prolif_batch_configs(stage_data, base_path, defaults)
-    else:
-        raise ValueError("prolif_compare requires from_prolif_batch or systems list")
-
-    base_dir = stage_data.get("base_dir") or defaults.get("data_root")
-    if base_dir:
-        base_dir = _resolve_path(base_dir, base_path)
-    else:
-        base_dir = systems[0].base_dir
-
-    output_dir = stage_data.get("output_dir") or _default_output_dir(
-        "prolif_compare",
-        defaults.get("output_root"),
-        base_dir,
-    )
-    output_dir = _resolve_path(str(output_dir), base_path) if output_dir else None
-    if output_dir is None:
-        raise ValueError("prolif_compare requires output_dir or output_root")
-
-    protein_name = stage_data.get("protein_name") or defaults.get("protein_name") or systems[0].protein_name
-
-    plot_data = stage_data.get("plot_config", {})
-    base_plot = systems[0].plot_config
-    plot_config = PlotConfig(
-        template=plot_data.get("template", base_plot.template),
-        style=plot_data.get("style", base_plot.style),
-        width=plot_data.get("width", base_plot.width),
-        height=plot_data.get("height", base_plot.height),
-        scale=plot_data.get("scale", base_plot.scale),
-        font_family=plot_data.get("font_family", base_plot.font_family),
-        font_size=plot_data.get("font_size", base_plot.font_size),
-        colors={k: tuple(v) for k, v in plot_data.get("colors", {}).items()},
-        save_formats=plot_data.get("save_formats", base_plot.save_formats),
-    )
-
-    return ProlifCompareConfig(
-        output_dir=output_dir,
-        protein_name=protein_name,
-        systems=systems,
-        compare_mode=stage_data.get("compare_mode", "intersection"),
-        plot_config=plot_config,
-    )
-
-
-def _build_ttclust_config(data: Dict[str, Any], base_path: Path, defaults: Dict[str, Any]) -> TTClustConfig:
-    raw_base_dir = data.get("base_dir") or defaults.get("data_root")
-    if not raw_base_dir:
-        raise ValueError("ttclust config requires base_dir (or paths.data_root)")
-    base_dir = _resolve_path(raw_base_dir, base_path)
-
-    output_dir = data.get("output_dir") or _default_output_dir("ttclust", defaults.get("output_root"), base_dir)
-    output_dir = _resolve_path(str(output_dir), base_path) if output_dir else None
-    if output_dir is None:
-        raise ValueError("ttclust config requires output_dir or output_root")
-
-    protein_name = data.get("protein_name") or defaults.get("protein_name") or "Protein"
-    system_name = data.get("system_name") or data.get("ligand_name") or data.get("name") or "System"
-
-    topology = data.get("topology")
-    if topology:
-        topology = _resolve_stage_input_path(topology, base_path, base_dir, raw_base_dir)
-
-    trajectories = data.get("trajectories", [])
-    if not trajectories:
-        raise ValueError("ttclust config requires trajectories")
-    trajectories = [
-        _resolve_stage_input_path(p, base_path, base_dir, raw_base_dir)
-        for p in trajectories
-    ]
-
-    return TTClustConfig(
-        base_dir=base_dir,
-        output_dir=output_dir,
-        protein_name=protein_name,
-        system_name=system_name,
-        topology=topology,
-        trajectories=trajectories,
-        executable=data.get("executable"),
-        stride=int(data.get("stride", 1)),
-        logfile=data.get("logfile", "clustering.log"),
-        select_traj=data.get("select_traj", "all"),
-        select_alignment=data.get("select_alignment", "backbone"),
-        select_rmsd=data.get("select_rmsd", "backbone"),
-        method=data.get("method", "ward"),
-        cutoff=data.get("cutoff"),
-        n_groups=str(data["n_groups"]) if data.get("n_groups") is not None else None,
-        autoclust=bool(data.get("autoclust", True)),
-        interactive_matrix=bool(data.get("interactive_matrix", False)),
-        axis=data.get("axis"),
-        limit_matrix=data.get("limit_matrix"),
-        extra_args=[str(v) for v in data.get("extra_args", [])],
-        environment={str(k): str(v) for k, v in (data.get("environment", {}) or {}).items()},
-        plot_config=PlotConfig(
-            template=(data.get("plot_config") or {}).get("template", "plotly_white"),
-            width=(data.get("plot_config") or {}).get("width", 1200),
-            height=(data.get("plot_config") or {}).get("height", 600),
-            scale=(data.get("plot_config") or {}).get("scale", 2),
-            font_family=(data.get("plot_config") or {}).get("font_family", "Arial"),
-            font_size=(data.get("plot_config") or {}).get("font_size", 16),
-            save_formats=(data.get("plot_config") or {}).get("save_formats", ["html", "svg"]),
-        ),
-    )
-
-
-def _build_ttclust_batch_configs(stage_data: Dict[str, Any], base_path: Path, defaults: Dict[str, Any]) -> List[TTClustConfig]:
-    raw_base_dir = stage_data.get("base_dir") or defaults.get("data_root")
-    if not raw_base_dir:
-        raise ValueError("ttclust_batch requires base_dir (or paths.data_root)")
-    base_dir = _resolve_path(raw_base_dir, base_path)
-    systems_data = _batch_systems({**stage_data, "base_dir": raw_base_dir}, base_path, "ttclust_batch")
-
-    output_dir = stage_data.get("output_dir") or _default_output_dir("ttclust_batch", defaults.get("output_root"), base_dir)
-    output_dir = _resolve_path(str(output_dir), base_path) if output_dir else None
-    output_pattern = stage_data.get("output_subdir_pattern", "output_{name}")
-
-    configs: List[TTClustConfig] = []
-    for sys_data in systems_data:
-        sys_name = sys_data.get("name") or sys_data.get("system_name") or sys_data.get("ligand_name")
-        if not sys_name:
-            raise ValueError("ttclust_batch systems entries require name")
-        batch_output = output_dir / output_pattern.format(name=sys_name) if output_dir else None
-
-        cfg_data = {
-            **{k: v for k, v in stage_data.items() if k not in ("systems", "auto_discover")},
-            **{k: v for k, v in sys_data.items() if k != "directories"},
-            "base_dir": str(sys_data.get("base_dir") or raw_base_dir),
-            "output_dir": str(batch_output) if batch_output else None,
-            "system_name": sys_data.get("system_name") or sys_name,
-            "name": sys_name,
-        }
-        configs.append(_build_ttclust_config(cfg_data, base_path, defaults))
-
-    return configs
-
-
-def _build_ranking_config(stage_data: Dict[str, Any], base_path: Path, defaults: Dict[str, Any]) -> RankingConfig:
+    reference_systems: Optional[List[str]] = None,
+) -> RankingConfig:
     output_dir = stage_data.get("output_dir") or _default_output_dir(
         "ranking",
         defaults.get("output_root"),
@@ -1413,6 +1054,9 @@ def _build_ranking_config(stage_data: Dict[str, Any], base_path: Path, defaults:
         "md_stats_file": md_stats_file,
         "mmpbsa_data_dir": mmpbsa_data_dir,
         "distance_summary_file": distance_summary_file,
+        "exclude_systems": list(stage_data.get("exclude_systems") or []) + list(reference_systems or []),
+        "n_bootstrap": int(stage_data.get("n_bootstrap", 2000)),
+        "seed": int(stage_data.get("seed", 0)),
     }
     if metric_directions is not None:
         kwargs["metric_directions"] = metric_directions
@@ -1657,11 +1301,25 @@ def _build_md_compare_config(
             outlier_threshold=stage_data.get("outlier_threshold", base_cfg.outlier_threshold),
             ligands=stage_data.get("ligands", base_cfg.ligands),
             rmsf_terminals=base_cfg.rmsf_terminals,
+            convert_units=stage_data.get("convert_units", base_cfg.convert_units),
         )
 
     config = _build_md_config(stage_data, base_path, defaults)
     _assign_palette_if_needed(config.systems, palette)
     return config
+
+
+def _reference_system_names(config: PipelineConfig) -> List[str]:
+    """APO systems declared by already-built MD stages (excluded from ranking)."""
+    names: List[str] = []
+    for stage_name in ("md", "md_compare", "md_batch"):
+        stage = config.stages.get(stage_name)
+        md_configs = stage.config if stage is not None else None
+        if md_configs is None:
+            continue
+        for md_config in md_configs if isinstance(md_configs, list) else [md_configs]:
+            names.extend(s.name for s in getattr(md_config, "systems", []) if s.is_apo)
+    return sorted(set(names))
 
 
 def load_pipeline_config(yaml_path: Path) -> PipelineConfig:
@@ -1707,6 +1365,7 @@ def load_pipeline_config(yaml_path: Path) -> PipelineConfig:
         "pca",
         "pca_batch",
         "pca_compare",
+        "pca_joint",
         "distance",
         "distance_batch",
         "distance_compare",
@@ -1770,6 +1429,8 @@ def load_pipeline_config(yaml_path: Path) -> PipelineConfig:
                 pca_batch_configs = stage.config
             elif stage_name == "pca_compare":
                 stage.config = _build_pca_compare_config(stage_data, base_path, defaults, pca_batch_configs)
+            elif stage_name == "pca_joint":
+                stage.config = _build_pca_joint_config(stage_data, base_path, defaults)
             elif stage_name == "distance":
                 stage.config = _build_distance_config(stage_data, base_path, defaults)
             elif stage_name == "distance_batch":
@@ -1797,7 +1458,9 @@ def load_pipeline_config(yaml_path: Path) -> PipelineConfig:
                 stage.config = _build_ttclust_batch_configs(stage_data, base_path, defaults)
                 ttclust_batch_configs = stage.config
             elif stage_name == "ranking":
-                stage.config = _build_ranking_config(stage_data, base_path, defaults)
+                stage.config = _build_ranking_config(
+                    stage_data, base_path, defaults, _reference_system_names(config)
+                )
             elif stage_name == "utils":
                 stage.config = stage_data
             stage.inline = True
@@ -1872,6 +1535,8 @@ def _md_config_to_dict(config: MDConfig) -> Dict[str, Any]:
             "slope_threshold": config.stability.slope_threshold,
             "min_points": config.stability.min_points,
             "apply_to_all_metrics": config.stability.apply_to_all_metrics,
+            "method": config.stability.method,
+            "n_candidates": config.stability.n_candidates,
         },
         "sequence_topology": str(config.sequence_topology) if config.sequence_topology else None,
         "sequence_selection": config.sequence_selection,
@@ -2290,479 +1955,6 @@ def save_pipeline_config(config: PipelineConfig, output_path: Path) -> None:
 
 def generate_pipeline_template(output_path: Path) -> None:
     """Generate a pipeline YAML template."""
-    template = """# GROMACS Analysis Pipeline Template
-# ===================================
-
-project:
-  name: "demo_project"
-  protein_name: "ProteinX"
-
-paths:
-  data_root: "/path/to/project"
-  output_root: "./analysis_outputs"
-
-# Execution order (omit stages to skip)
-run: ["qc", "md", "mmpbsa", "pca"]
-
-qc:
-  enabled: true
-  base_dir: "./1-MD/analysis"
-  output_dir: "./analysis_outputs/qc"
-  topology: "./1-MD/analysis/HOLO_LigandA_1/step3_input.psf"
-  trajectories:
-    - "./1-MD/analysis/HOLO_LigandA_1/step5_production_noPBC.xtc"
-    - "./1-MD/analysis/HOLO_LigandA_2/step5_production_noPBC.xtc"
-    - "./1-MD/analysis/HOLO_LigandA_3/step5_production_noPBC.xtc"
-  expected_replicates: 3
-  # Optional index/group sanity
-  # index_file: "./1-MD/analysis/HOLO_LigandA_1/new_index.ndx"
-  # expected_groups: ["Protein", "UNK", "core_no_terminals_Calpha"]
-  protein_selection: "protein"
-  ligand_selection: "resname UNK"
-  sample_stride: 10
-  max_frames: 500
-  fail_on_error: false
-
-md:
-  enabled: true
-  base_dir: "./1-MD/analysis"
-  output_dir: "./analysis_outputs/md"
-  time_unit_input: "auto"  # auto|frame|ps|ns
-  time_unit_output: "ns"   # auto|frame|ps|ns
-  # time_step_ps: 2.0       # required when converting from frame
-  # time_scale: 0.001       # optional explicit multiplier override
-  smoothing_window: 1       # set >1 to apply centered rolling smoothing
-  outlier_threshold: null   # optional |z| threshold to mask artefacts; null disables (recommended)
-  # Several ligands in ONE complex (e.g. inhibitor + cofactor): ligand RMSD and COM-COM
-  # become one metric/plot per ligand (files RMSD_<name>.dat, comcom_<name>.dat).
-  # ligands: ["INH", "NAD"]
-  rmsf_terminals:            # flexible termini drawn faded between two dashed boundary lines
-    enabled: true
-    mad_multiplier: 3.0
-    smoothing_window: 3
-    stable_run: 3
-    max_terminal_fraction: 0.25
-  systems:
-    - name: "LigandA"
-      dir_pattern: "HOLO_LigandA_{}"
-      is_apo: false
-      replicates: 3
-    - name: "APO"
-      dir_pattern: "APO_{}"
-      is_apo: true
-      replicates: 3
-  # Optional RMSF labels
-  # amino_acids:
-  #   sequence: "MKT..."       # 1-letter sequence
-  #   sequence_start: 814      # add residue numbers to labels
-  #   # or labels: ["ALA814", "GLY815", "SER816"]
-
-# Batch holo vs apo (auto-loop, one output per holo system)
-md_batch:
-  enabled: false
-  base_dir: "./1-MD/analysis"
-  output_dir: "./analysis_outputs/md_batch"
-  replicates: 3
-  apo_system:
-    name: "APO"
-    dir_pattern: "APO_{}"
-  holo_systems:
-    - name: "LigandA"
-      dir_pattern: "HOLO_LigandA_{}"
-    - name: "LigandB"
-      dir_pattern: "HOLO_LigandB_{}"
-  # dir_names example (override dir_pattern):
-  # holo_systems:
-  #   - name: "LigandA"
-  #     dir_names: ["HOLO_LigandA_1", "HOLO_LigandA_2", "HOLO_LigandA_3"]
-  output_subdir_pattern: "output_{name}"
-
-# Cross-ligand comparison (overlay all holo systems in one run)
-md_compare:
-  enabled: false
-  from_md_batch: true
-  include_apo: false
-  output_dir: "./analysis_outputs/md_compare"
-  # Optional: override plot config/palette
-  # plot_config:
-  #   style: "comparative"
-  # palette:
-  #   - [31, 119, 180]
-  #   - [255, 127, 14]
-
-mmpbsa:
-  enabled: true
-  base_dir: "./3-Results_Holo"
-  output_dir: "./analysis_outputs/mmpbsa"
-  protein_name: "ProteinX"
-  ligand_name: "LigandA"
-  compare_systems: false
-  compare_binding_key: "TOTAL"
-  compare_components: false
-  incomplete_replicates_policy: "warn"  # ignore|warn|error
-  require_decomp_replicates: false
-  # compare_component_order: ["ΔVDWAALS", "ΔEEL", "ΔEGB", "ΔESURF", "ΔGGAS", "ΔGSOLV"]
-  systems:
-    - name: "LigandA"
-      dir_pattern: "HOLO_{}"
-      replicates: 3
-
-pca:
-  enabled: false
-  base_dir: "./2-PCA"
-  output_dir: "./analysis_outputs/pca"
-  n_pcs: 10
-  # Optional: run GROMACS PCA generation before plotting.
-  # run_gromacs:
-  #   enabled: true
-  #   input_dir: "./1-MD/analysis/HOLO_LigandA_1"
-  #   gmx: "gmx"
-  #   tpr: "step5_production.tpr"
-  #   trajectory: "step5_production.xtc"
-  #   index: "new_index.ndx"
-  #   protein_group: "Protein"
-  #   output_group: "System"
-  #   terminal_detection:
-  #     rmsf_file: "RMSF_.dat"
-  #     gro_file: "step3_input.gro"
-  #     pdb_file: "step3_input.pdb"
-  #     # core_residue_range: [9, 289]
-  #   window_cosine:
-  #     enabled: true
-  #     max_ns: 100
-  #     step_ns: 10
-  # FEL (requires gmx sham outputs in PCA folder)
-  # fel:
-  #   enabled: true
-  #   pairs: ["12", "13", "23"]
-  #   contours: 7
-  #   step: 2
-  #   colorscale: "Viridis"
-  #   overlay_projection: true
-  #   include_probability: true
-  #   include_entropy: false
-  #   include_enthalpy: false
-  # Clustering in PCA space
-  # clustering:
-  #   enabled: true
-  #   method: "kmeans"
-  #   pair: "12"
-  #   n_clusters: 3
-  #   downsample: 1
-  #   max_points: 5000
-
-# Distance analysis (ligand-protein residue distances)
-distance:
-  enabled: false
-  base_dir: "./1-MD/analysis"
-  output_dir: "./analysis_outputs/distance"
-  protein_name: "ProteinX"
-  ligand_name: "LigandA"
-  topology: "./1-MD/analysis/HOLO_LigandA_1/step3_input.psf"
-  trajectories:
-    - "./1-MD/analysis/HOLO_LigandA_1/step5_production_noPBC.xtc"
-    - "./1-MD/analysis/HOLO_LigandA_2/step5_production_noPBC.xtc"
-    - "./1-MD/analysis/HOLO_LigandA_3/step5_production_noPBC.xtc"
-  # Optional auto-detect of pocket residues
-  # residues:
-  #   auto: true
-  #   cutoff: 5.0  # in output units (e.g., Å)
-  #   selection: "protein"
-  residues:
-    range: [814, 937]
-  ligand_selection: "resname UNK"
-  method: "com"  # com or min
-  combined_plot: true
-  per_residue_plots: true
-
-# PCA batch (one output per PCA directory)
-pca_batch:
-  enabled: false
-  base_dir: "./2-PCA"
-  output_dir: "./analysis_outputs/pca_batch"
-  # Optional shared automatic GROMACS settings for all systems.
-  # run_gromacs:
-  #   enabled: true
-  #   gmx: "gmx"
-  systems:
-    - name: "LigandA"
-      dir_name: "LigandA_PCA"
-      # simulation_dir: "../1-MD/analysis/HOLO_LigandA_1"
-      # pca_dir: "LigandA_PCA"
-    - name: "LigandB"
-      dir_name: "LigandB_PCA"
-  output_subdir_pattern: "output_{name}"
-
-# Cross-ligand PCA comparison
-pca_compare:
-  enabled: false
-  from_pca_batch: true
-  output_dir: "./analysis_outputs/pca_compare"
-  compare_pairs: ["12", "13", "23"]
-  compare_scree: true
-  compare_cosine: false
-  # downsample: 5
-  # max_points: 5000
-
-# Distance batch (one output per system)
-distance_batch:
-  enabled: false
-  base_dir: "./1-MD/analysis"
-  output_dir: "./analysis_outputs/distance_batch"
-  protein_name: "ProteinX"
-  ligand_selection: "resname UNK"
-  method: "com"
-  # Optional auto-detect of pocket residues
-  # residues:
-  #   auto: true
-  #   cutoff: 5.0  # in output units (e.g., Å)
-  #   selection: "protein"
-  residues:
-    range: [814, 937]
-  systems:
-    - name: "LigandA"
-      topology: "./1-MD/analysis/HOLO_LigandA_1/step3_input.psf"
-      trajectories:
-        - "./1-MD/analysis/HOLO_LigandA_1/step5_production_noPBC.xtc"
-        - "./1-MD/analysis/HOLO_LigandA_2/step5_production_noPBC.xtc"
-        - "./1-MD/analysis/HOLO_LigandA_3/step5_production_noPBC.xtc"
-    - name: "LigandB"
-      topology: "./1-MD/analysis/HOLO_LigandB_1/step3_input.psf"
-      trajectories:
-        - "./1-MD/analysis/HOLO_LigandB_1/step5_production_noPBC.xtc"
-        - "./1-MD/analysis/HOLO_LigandB_2/step5_production_noPBC.xtc"
-        - "./1-MD/analysis/HOLO_LigandB_3/step5_production_noPBC.xtc"
-  output_subdir_pattern: "output_{name}"
-
-# Cross-ligand distance comparison
-distance_compare:
-  enabled: false
-  from_distance_batch: true
-  output_dir: "./analysis_outputs/distance_compare"
-  compare_mode: "intersection"  # intersection or union
-  show_std: false
-  include_overall: false
-  heatmap_enabled: true
-  heatmap_downsample: 2
-  # heatmap_max_frames: 5000
-  delta_enabled: true
-  # delta_reference: "LigandA"
-
-# Interaction fingerprint analysis
-interactions:
-  enabled: false
-  base_dir: "./1-MD/analysis"
-  output_dir: "./analysis_outputs/interactions"
-  protein_name: "ProteinX"
-  ligand_name: "LigandA"
-  topology: "./1-MD/analysis/HOLO_LigandA_1/step3_input.psf"
-  trajectories:
-    - "./1-MD/analysis/HOLO_LigandA_1/step5_production_noPBC.xtc"
-    - "./1-MD/analysis/HOLO_LigandA_2/step5_production_noPBC.xtc"
-    - "./1-MD/analysis/HOLO_LigandA_3/step5_production_noPBC.xtc"
-  ligand_selection: "resname UNK"
-  interaction_types: ["hbond", "salt_bridge", "hydrophobic", "pi_stacking"]
-  stride: 1
-  # ligand_ring_sel: "resname UNK and name C*"
-
-# Interaction batch (per ligand)
-interactions_batch:
-  enabled: false
-  base_dir: "./1-MD/analysis"
-  output_dir: "./analysis_outputs/interactions_batch"
-  systems:
-    - name: "LigandA"
-      ligand_name: "LigandA"
-      topology: "./1-MD/analysis/HOLO_LigandA_1/step3_input.psf"
-      trajectories:
-        - "./1-MD/analysis/HOLO_LigandA_1/step5_production_noPBC.xtc"
-    - name: "LigandB"
-      ligand_name: "LigandB"
-      topology: "./1-MD/analysis/HOLO_LigandB_1/step3_input.psf"
-      trajectories:
-        - "./1-MD/analysis/HOLO_LigandB_1/step5_production_noPBC.xtc"
-  output_subdir_pattern: "output_{name}"
-
-# Cross-ligand interaction comparison
-interactions_compare:
-  enabled: false
-  from_interactions_batch: true
-  output_dir: "./analysis_outputs/interactions_compare"
-  compare_mode: "intersection"
-
-# ProLIF fingerprint analysis
-prolif:
-  enabled: false
-  base_dir: "./1-MD/analysis"
-  output_dir: "./analysis_outputs/prolif"
-  protein_name: "ProteinX"
-  ligand_name: "LigandA"
-  topology: "./1-MD/analysis/HOLO_LigandA_1/step3_input.psf"
-  trajectories:
-    - "./1-MD/analysis/HOLO_LigandA_1/step5_production_noPBC.xtc"
-    - "./1-MD/analysis/HOLO_LigandA_2/step5_production_noPBC.xtc"
-    - "./1-MD/analysis/HOLO_LigandA_3/step5_production_noPBC.xtc"
-  ligand_selection: "resname UNK"
-  protein_selection: "protein"
-  interaction_types: ["HBAcceptor", "HBDonor", "Hydrophobic", "PiStacking", "VdWContact"]
-  vicinity_cutoff: 5.0
-  stride: 10
-  outputs: ["barcode", "lignetwork", "occupancy", "tanimoto"]
-  lignetwork_display_all: true
-  lignetwork_count_aware: true
-  barcode_config:
-    n_frame_ticks: 10
-    residues_tick_location: "top"
-    xlabel: "Frame"
-    figsize: [12, 4]
-    dpi: 150
-    only_interacting_residues: true
-    min_interaction_frames: 1
-    # max_residues: 40
-
-# ProLIF batch (per ligand)
-prolif_batch:
-  enabled: false
-  base_dir: "./1-MD/analysis"
-  output_dir: "./analysis_outputs/prolif_batch"
-  # Automatic per-ligand discovery: every directory matching the pattern is grouped by
-  # {ligand}; {rep} directories become replicates. Explicit systems below override matches.
-  auto_discover:
-    pattern: "HOLO_{ligand}_{rep}"
-    topology: "step3_input.psf"
-    trajectory: "step5_production_noPBC.xtc"
-    # include: ["LigandA", "LigandB"]
-    # exclude: ["LigandC"]
-  # ligands: auto              # detect every non-protein/solvent/ion residue -> one run per ligand
-  # ligand_exclude: ["NAD"]    # with ligands: auto
-  lignetwork_kind: "aggregate" # interactions present in >= lignetwork_threshold of frames
-  lignetwork_threshold: 0.3
-  occupancy_top_n: 25
-  systems:
-    - name: "LigandA"
-      ligand_name: "LigandA"
-      topology: "./1-MD/analysis/HOLO_LigandA_1/step3_input.psf"
-      trajectories:
-        - "./1-MD/analysis/HOLO_LigandA_1/step5_production_noPBC.xtc"
-    - name: "LigandB"
-      ligand_name: "LigandB"
-      topology: "./1-MD/analysis/HOLO_LigandB_1/step3_input.psf"
-      trajectories:
-        - "./1-MD/analysis/HOLO_LigandB_1/step5_production_noPBC.xtc"
-  output_subdir_pattern: "output_{name}"
-
-# Cross-ligand ProLIF comparison
-prolif_compare:
-  enabled: false
-  from_prolif_batch: true
-  output_dir: "./analysis_outputs/prolif_compare"
-  compare_mode: "intersection"
-
-# TTClust trajectory clustering
-ttclust:
-  enabled: false
-  base_dir: "./1-MD/analysis"
-  output_dir: "./analysis_outputs/ttclust"
-  protein_name: "ProteinX"
-  system_name: "LigandA"
-  topology: "./1-MD/analysis/HOLO_LigandA_1/step3_input.psf"
-  trajectories:
-    - "./1-MD/analysis/HOLO_LigandA_1/step5_production_noPBC.xtc"
-    - "./1-MD/analysis/HOLO_LigandA_2/step5_production_noPBC.xtc"
-    - "./1-MD/analysis/HOLO_LigandA_3/step5_production_noPBC.xtc"
-  # executable: "ttclust.py"   # optional, auto-detected if omitted
-  stride: 10
-  logfile: "clustering.log"
-  select_traj: "all"
-  select_alignment: "backbone"
-  select_rmsd: "backbone"
-  method: "ward"
-  autoclust: true
-  interactive_matrix: false
-  # cutoff: 2.75
-  # n_groups: "auto"           # or integer as string/number
-  # axis: "frame"
-  # limit_matrix: 100000000
-  # extra_args: ["-some_flag", "value"]
-  # environment:
-  #   NUMBA_DISABLE_JIT: "1"
-
-# TTClust batch (per system)
-ttclust_batch:
-  enabled: false
-  base_dir: "./1-MD/analysis"
-  output_dir: "./analysis_outputs/ttclust_batch"
-  auto_discover:
-    pattern: "HOLO_{ligand}_{rep}"
-    topology: "step3_input.psf"
-    trajectory: "step5_production_noPBC.xtc"
-  stride: 10
-  logfile: "clustering.log"
-  select_traj: "all"
-  select_alignment: "backbone"
-  select_rmsd: "backbone"
-  method: "ward"
-  autoclust: true
-  interactive_matrix: false
-  systems:
-    - name: "LigandA"
-      system_name: "LigandA"
-      topology: "./1-MD/analysis/HOLO_LigandA_1/step3_input.psf"
-      trajectories:
-        - "./1-MD/analysis/HOLO_LigandA_1/step5_production_noPBC.xtc"
-    - name: "LigandB"
-      system_name: "LigandB"
-      topology: "./1-MD/analysis/HOLO_LigandB_1/step3_input.psf"
-      trajectories:
-        - "./1-MD/analysis/HOLO_LigandB_1/step5_production_noPBC.xtc"
-  output_subdir_pattern: "output_{name}"
-
-# Ranking table across ligands
-ranking:
-  enabled: false
-  output_dir: "./analysis_outputs/ranking"
-  # md_stats_file: "./analysis_outputs/md_compare/statistics_summary.csv"
-  # mmpbsa_data_dir: "./analysis_outputs/mmpbsa/data"
-  # distance_summary_file: "./analysis_outputs/distance_compare/data/distance_compare_summary.csv"
-
-# Utility tasks (optional)
-utils:
-  enabled: false
-  output_dir: "./analysis_outputs/utils"
-  tasks:
-    - type: "examine_csv"
-      files:
-        - "/path/to/FINAL_RESULTS_MMPBSA.csv"
-        - "/path/to/FINAL_DECOMP_MMPBSA.csv"
-    - type: "convert_dat"
-      file_type: "results"   # or "decomp"
-      inputs:
-        - "/path/to/FINAL_RESULTS_MMPBSA.dat"
-    - type: "renumber_gro"
-      input_file: "/path/to/step3_input.gro"
-      start_residue: 679
-    - type: "modevectors"
-      first_obj: "/path/to/ref.pdb"
-      last_obj: "/path/to/extreme.pdb"
-      pml_name: "modevectors.pml"
-    - type: "generate_upstream_scripts"
-      outputs: ["md_vmd", "mmpbsa", "pca"]
-      topology: "step3_input.psf"
-      trajectory: "step5_production_noPBC.xtc"
-      groups: [21, 17]
-    - type: "duivy_inspect_guide"
-      xvg_files:
-        - "/path/to/RMSD_.xvg"
-        - "/path/to/cc_all.xvg"
-      xpm_files:
-        - "/path/to/gibbs_12.xpm"
-      # output_file: "./analysis_outputs/utils/duivy_inspection_guide.md"
-
-# Optional: point to existing module YAMLs instead of inline configs
-# md:
-#   enabled: true
-#   config_file: "./configs/md.yaml"
-#   output_dir: "./analysis_outputs/md"
-"""
+    template = PIPELINE_TEMPLATE
     output_path.write_text(template)
     logger.info(f"Pipeline template created: {output_path}")

@@ -59,6 +59,7 @@ set protein_selection "__PROTEIN_SELECTION__"
 set ligand_selection "__LIGAND_SELECTION__"
 set metric_output_dir "__METRIC_OUTPUT_DIR__"
 set max_frames __MAX_FRAMES__
+set rmsf_first_frame __RMSF_FIRST_FRAME__
 
 proc outpath {filename} {
     global metric_output_dir
@@ -184,7 +185,7 @@ proc calc_rmsd {sel_text outfile_name} {
 }
 
 proc calc_rmsf {} {
-    global protein_selection
+    global protein_selection rmsf_first_frame nf
     set sel_text "${protein_selection} and name CA"
     if {[selection_count $sel_text] <= 0} {
         puts "WARNING: skipping RMSF because selection is empty: $sel_text"
@@ -192,7 +193,12 @@ proc calc_rmsf {} {
     }
     puts "Calculating RMSF for: $sel_text"
     set sel [atomselect top $sel_text]
-    set rmsf [measure rmsf $sel]
+    # Only frames from the production start (e.g. md/data/equilibration.json start_index).
+    if {$rmsf_first_frame >= $nf} {
+        puts "WARNING: rmsf_first_frame $rmsf_first_frame >= $nf frames; using all frames"
+        set rmsf_first_frame 0
+    }
+    set rmsf [measure rmsf $sel first $rmsf_first_frame]
     set outfile [open [outpath "RMSF_.dat"] w]
     for {set i 0} {$i < [$sel num]} {incr i} {
         set resid [lindex [$sel get resid] $i]
@@ -255,6 +261,26 @@ proc calc_hbonds {} {
         puts "WARNING: hydrogen-bond calculation failed: $err"
     }
     $sel delete
+}
+
+proc calc_hbonds_ligand {lig outfile_name} {
+    global protein_selection
+    if {[catch {package require hbonds} err]} {
+        puts "WARNING: VMD hbonds plugin unavailable; skipping $outfile_name: $err"
+        return
+    }
+    if {[selection_count $lig] <= 0} {
+        puts "WARNING: skipping $outfile_name because ligand selection is empty: $lig"
+        return
+    }
+    puts "Calculating protein-ligand hydrogen bonds for: $lig"
+    set prot [atomselect top $protein_selection]
+    set ligsel [atomselect top $lig]
+    if {[catch {hbonds -sel1 $prot -sel2 $ligsel -writefile yes -plot no -outfile [outpath $outfile_name]} err]} {
+        puts "WARNING: protein-ligand hydrogen-bond calculation failed: $err"
+    }
+    $prot delete
+    $ligsel delete
 }
 
 proc calc_comcom {{lig_selection ""} {outfile_name "comcom_.dat"}} {
@@ -321,6 +347,7 @@ if {[selection_count $ligand_selection] > 0} {
     calc_rmsd $ligand_heavy "RMSD_.dat"
     calc_rmsd $complex_selection "RMSD_complex_.dat"
     calc_comcom
+    calc_hbonds_ligand $ligand_selection "hbonds_lig_.dat"
 }
 __PER_LIGAND__
 puts "VMD metric generation complete. Output directory: $metric_output_dir"
@@ -334,6 +361,7 @@ quit
         "__LIGAND_SELECTION__": _tcl_double_quote(ligand_selection),
         "__METRIC_OUTPUT_DIR__": _tcl_double_quote(metric_output_dir),
         "__MAX_FRAMES__": str(max_frames),
+        "__RMSF_FIRST_FRAME__": str(max(0, int(task.get("rmsf_first_frame", 0)))),
         "__PER_LIGAND__": _per_ligand_tcl(task.get("ligands") or []),
     }
     for placeholder, value in replacements.items():
@@ -364,6 +392,7 @@ def _per_ligand_tcl(ligands) -> str:
                     f'if {{[selection_count "{sel}"] > 0}} {{',
                     f'    calc_rmsd "({sel}) and noh" "RMSD_{name}.dat"',
                     f'    calc_comcom "{sel}" "comcom_{name}.dat"',
+                    f'    calc_hbonds_ligand "{sel}" "hbonds_lig_{name}.dat"',
                     "}",
                 ]
             )

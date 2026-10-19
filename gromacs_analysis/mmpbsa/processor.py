@@ -37,6 +37,7 @@ class MMPBSAProcessor:
         """
         self.config = config
         self.parser = MMPBSAParser(debug=False)
+        self._frames_used: List[Optional[int]] = []
         logger.info("MMPBSAProcessor initialized")
     
     def load_all_data(self) -> Dict[str, Dict]:
@@ -71,6 +72,9 @@ class MMPBSAProcessor:
             
             # Parse and process
             results_data = self._process_results_files(results_files, system.replicates)
+            if self.config.start_frame is not None:
+                qc_metadata["start_frame"] = self.config.start_frame
+                qc_metadata["frames_used"] = list(self._frames_used)
             decomp_data = self._process_decomp_files(decomp_files, system.replicates) if decomp_files else None
             
             all_data[system.name] = {
@@ -260,11 +264,14 @@ class MMPBSAProcessor:
         
         # Parse all files
         parsed_data = []
+        self._frames_used = []
         for file_path in files:
             data = self.parser.parse_results(file_path, file_format='auto')
             if data:
                 if not data.get('entropy'):
                     data['entropy'] = self._entropy_from_sibling_dat(file_path)
+                if self.config.start_frame is not None:
+                    data = self._apply_start_frame(data, file_path)
                 parsed_data.append(data)
         
         if not parsed_data:
@@ -279,6 +286,46 @@ class MMPBSAProcessor:
             # Multiple replicates: average and calculate SD
             return self._process_replicate_results(parsed_data)
     
+    def _apply_start_frame(self, data: Dict, file_path: Path) -> Dict:
+        """Re-average frame-level results using only frames >= start_frame."""
+        frames = data.get('frame_data')
+        start = int(self.config.start_frame)
+        if frames is None or frames.empty or 'Frame #' not in frames.columns:
+            logger.warning(
+                f"start_frame={start} ignored for {file_path.name}: no frame-level data "
+                "(use CSV output, or set startframe in the gmx_MMPBSA input)."
+            )
+            self._frames_used.append(None)
+            return data
+        frame_numbers = pd.to_numeric(frames['Frame #'], errors='coerce')
+        kept = frames[frame_numbers >= start]
+        self._frames_used.append(int(len(kept)))
+        if kept.empty:
+            raise ValueError(f"start_frame={start} leaves no frames in {file_path}")
+        numeric = [c for c in kept.columns if c != 'Frame #']
+        delta = {}
+        for col in numeric:
+            if col in ('GGAS', 'GSOLV', 'TOTAL'):
+                continue
+            values = pd.to_numeric(kept[col], errors='coerce').dropna()
+            std = float(values.std()) if len(values) > 1 else 0.0
+            delta[col] = {
+                'value': float(values.mean()),
+                'std_dev': std,
+                'std_err': std / np.sqrt(len(values)) if len(values) > 1 else 0.0,
+            }
+        binding = {
+            key: float(pd.to_numeric(kept[key], errors='coerce').mean())
+            for key in ('GGAS', 'GSOLV', 'TOTAL') if key in kept.columns
+        }
+        updated = dict(data)
+        updated['delta_components'] = delta
+        updated['binding_energy'] = binding
+        updated['frame_data'] = kept.copy()
+        updated.setdefault('metadata', {})['frames_used'] = int(len(kept))
+        logger.info(f"{file_path.name}: using {len(kept)} frames with Frame # >= {start}")
+        return updated
+
     def _entropy_from_sibling_dat(self, results_file: Path) -> Dict:
         """CSV exports carry no entropy; read IE/C2 from the FINAL_RESULTS DAT next to them."""
         if results_file.suffix.lower() == '.dat':

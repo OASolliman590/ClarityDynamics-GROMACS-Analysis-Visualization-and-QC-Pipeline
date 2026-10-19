@@ -9,7 +9,7 @@ from typing import Any, Dict, List
 from .config import PipelineConfig
 from ..md import MDAnalyzer
 from ..mmpbsa import MMPBSAAnalyzer
-from ..pca import PCAAnalyzer, PCAComparisonAnalyzer
+from ..pca import PCAAnalyzer, PCAComparisonAnalyzer, PCAJointAnalyzer
 from ..distance import DistanceAnalyzer, DistanceComparisonAnalyzer
 from ..interactions import InteractionAnalyzer, InteractionComparisonAnalyzer
 from ..ranking import RankingAnalyzer
@@ -81,6 +81,9 @@ def run_pipeline(config: PipelineConfig, continue_on_error: bool = False) -> Dic
                 stage.config.output_dir.mkdir(parents=True, exist_ok=True)
                 analyzer = PCAComparisonAnalyzer(stage.config)
                 results[name] = analyzer.run_analysis()
+            elif name == "pca_joint":
+                stage.config.output_dir.mkdir(parents=True, exist_ok=True)
+                results[name] = PCAJointAnalyzer(stage.config).run_analysis()
             elif name == "distance":
                 stage.config.output_dir.mkdir(parents=True, exist_ok=True)
                 analyzer = DistanceAnalyzer(stage.config)

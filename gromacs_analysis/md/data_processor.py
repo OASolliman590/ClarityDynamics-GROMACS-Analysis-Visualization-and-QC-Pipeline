@@ -20,6 +20,8 @@ import pandas as pd
 from scipy import stats as scipy_stats
 
 from .config import MDConfig, SystemConfig, AnalysisMetric
+from ..utils.equilibration import detect_equilibration
+from ..utils.units import conversion_factor, display_unit_from_label, parse_xvg_units
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +53,10 @@ class MDDataProcessor:
         self.config = config
         # Time units declared in GROMACS .xvg headers, keyed by file path.
         self._header_time_units: Dict[str, str] = {}
+        # Value (y-axis) units declared in .xvg headers, keyed by file path.
+        self._header_value_units: Dict[str, str] = {}
+        # Per-system equilibration results, filled when stability detection runs.
+        self.equilibration_records: List[Dict] = []
         logger.info("MDDataProcessor initialized")
 
     @staticmethod
@@ -213,6 +219,9 @@ class MDDataProcessor:
                     if is_rmsd and not is_specific_rmsd:
                         if any(token in filename_lower for token in ['apo', 'complex', 'protein']):
                             continue
+                    # Intra-protein H-bond patterns must not pick up protein-ligand files.
+                    if 'hbond' in pattern_lower and 'lig' not in pattern_lower and 'hbonds_lig' in filename_lower:
+                        continue
                     return file_path
         
         return None
@@ -242,6 +251,9 @@ class MDDataProcessor:
             header_unit = self._detect_header_time_unit(content)
             if header_unit:
                 self._header_time_units[str(file_path)] = header_unit
+            _, value_unit = parse_xvg_units(content)
+            if value_unit:
+                self._header_value_units[str(file_path)] = value_unit
 
             return self._parse_content(content, data_format, filename=file_path.name)
             
@@ -451,6 +463,7 @@ class MDDataProcessor:
         time_data, time_metadata = self._convert_time_axis(
             time_data, metric, header_unit=self._header_time_units.get(str(file_path))
         )
+        value_data, unit_metadata = self._convert_values(value_data, metric, file_path)
 
         keep = self._outlier_mask(value_data, metric)
         time_clean = time_data[keep]
@@ -469,6 +482,7 @@ class MDDataProcessor:
             'stats': stats,
             'n_points': len(value_clean),
             'time_metadata': time_metadata,
+            'unit_metadata': unit_metadata,
         }
 
     def _process_replicates(self, file_paths: List[Path], metric: AnalysisMetric) -> Dict:
@@ -494,6 +508,7 @@ class MDDataProcessor:
 
         # Load all replicates
         time_metadata = None
+        unit_records = []
         for file_path in file_paths:
             time_data, value_data = self.parse_data_file(file_path, metric.data_format)
 
@@ -503,6 +518,8 @@ class MDDataProcessor:
                 )
                 if time_metadata is None:
                     time_metadata = metadata
+                value_data, unit_record = self._convert_values(value_data, metric, file_path)
+                unit_records.append(unit_record)
                 raw = np.asarray(value_data, dtype=float).copy()
                 raw[~self._outlier_mask(raw, metric)] = np.nan
                 replicate_times.append(np.asarray(time_data))
@@ -556,7 +573,39 @@ class MDDataProcessor:
             'replicates': replicate_data,
             'replicates_raw': replicate_raw,
             'time_metadata': time_metadata,
+            'unit_metadata': self._merge_unit_records(unit_records, metric),
         }
+
+    def _convert_values(self, values: np.ndarray, metric: AnalysisMetric, file_path: Path) -> Tuple[np.ndarray, Dict]:
+        """Convert values from the unit declared in the file header to the metric's display unit."""
+        declared = self._header_value_units.get(str(file_path))
+        display = metric.unit or display_unit_from_label(metric.ylabel)
+        factor, status = conversion_factor(declared, display)
+        if not getattr(self.config, 'convert_units', True) and status == 'converted':
+            factor, status = 1.0, 'not_converted'
+        if status == 'unrecognised' and declared:
+            logger.warning(
+                "%s: declared unit '%s' cannot be converted to '%s'; values left unchanged.",
+                file_path, declared, display,
+            )
+        values = np.asarray(values, dtype=float)
+        if factor != 1.0:
+            values = values * factor
+        return values, {'declared': declared, 'display': display, 'factor': factor, 'status': status}
+
+    @staticmethod
+    def _merge_unit_records(records: List[Dict], metric: AnalysisMetric) -> Dict:
+        """One record for a replicate set; mixed sources are reported as 'mixed'."""
+        if not records:
+            return {}
+        statuses = {r['status'] for r in records}
+        factors = {r['factor'] for r in records}
+        merged = dict(records[0])
+        if len(statuses) > 1 or len(factors) > 1:
+            merged['status'] = 'mixed:' + ','.join(sorted(statuses))
+            merged['factor'] = ';'.join(str(r['factor']) for r in records)
+            merged['declared'] = ';'.join(str(r['declared']) for r in records)
+        return merged
 
     @staticmethod
     def _replicate_band(replicates: List[np.ndarray]) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -1025,6 +1074,8 @@ class MDDataProcessor:
         slope_threshold = float(self.config.stability.slope_threshold)
         min_points = int(self.config.stability.min_points)
 
+        method = getattr(self.config.stability, "method", "chodera")
+        self.equilibration_records = []
         for system_name, system_data in all_data.items():
             if target_metric not in system_data:
                 continue
@@ -1034,16 +1085,40 @@ class MDDataProcessor:
                 series = metric_data.get("mean")
                 time = metric_data.get("time")
             else:
-                series = metric_data.get("values")
+                series = metric_data.get("values_raw", metric_data.get("values"))
                 time = metric_data.get("time")
 
+            record = {
+                "system": system_name,
+                "metric": target_metric,
+                "method": method,
+                "start_index": 0,
+                "start_time": None,
+                "time_unit": (metric_data.get("time_metadata") or {}).get("output_unit"),
+                "n_effective": None,
+                "statistical_inefficiency": None,
+                "status": "insufficient_data",
+            }
+            self.equilibration_records.append(record)
             if series is None or time is None or len(series) < min_points:
                 continue
 
-            start_idx = self._detect_stable_start(time, series, window, std_threshold, slope_threshold)
+            if method == "window":
+                start_idx = self._detect_stable_start(time, series, window, std_threshold, slope_threshold)
+                record["status"] = "detected"
+            else:
+                start_idx, g, n_eff = detect_equilibration(
+                    np.asarray(series, dtype=float),
+                    n_candidates=int(getattr(self.config.stability, "n_candidates", 100)),
+                )
+                record["statistical_inefficiency"] = g
+                record["n_effective"] = None if np.isnan(n_eff) else n_eff
+                record["status"] = "insufficient_data" if np.isnan(n_eff) else "detected"
+            record["start_index"] = int(start_idx)
+            record["start_time"] = float(time[start_idx]) if len(time) > start_idx else None
             if start_idx <= 0:
                 continue
-            start_time = float(time[start_idx]) if len(time) > start_idx else None
+            start_time = record["start_time"]
 
             for metric_name, data in system_data.items():
                 if not self.config.stability.apply_to_all_metrics and metric_name != target_metric:

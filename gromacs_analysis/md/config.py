@@ -34,6 +34,8 @@ class AnalysisMetric:
     data_format: str = 'two_column'
     # Set for per-ligand variants of ligand metrics in multi-ligand complexes.
     ligand: Optional[str] = None
+    # Display unit of the values (e.g. "Å", "Å^2"); inferred from ylabel when None.
+    unit: Optional[str] = None
 
     @property
     def base_name(self) -> str:
@@ -47,6 +49,7 @@ class AnalysisMetric:
 LIGAND_METRICS = {
     'rmsd_lig': ['RMSD_{lig}.dat', 'RMSD_{lig}_*.dat', 'RMSD_lig_{lig}*.dat', 'RMSD_ligand_{lig}*.dat'],
     'comcom': ['comcom_{lig}.dat', 'comcom_{lig}_*.dat', 'COM_{lig}*.dat'],
+    'hbonds_lig': ['hbonds_lig_{lig}.dat', 'hbonds_lig_{lig}_*.dat'],
 }
 
 
@@ -134,8 +137,14 @@ class PlotConfig:
 
 @dataclass
 class StabilityConfig:
-    """Configuration for auto-detecting equilibration/stable window."""
+    """Configuration for auto-detecting equilibration/stable window.
+
+    method "chodera" (default) picks the start maximising the effective number of
+    uncorrelated samples (Chodera 2016); "window" is the previous std/slope rule.
+    """
     enabled: bool = False
+    method: str = "chodera"
+    n_candidates: int = 100
     metric: str = "rmsd_prot"
     window: int = 50
     std_threshold: float = 0.2
@@ -179,6 +188,8 @@ class MDConfig:
     # than one is given, ligand metrics (ligand RMSD, COM-COM) are split per ligand.
     ligands: List[Union[str, Dict[str, str]]] = field(default_factory=list)
     rmsf_terminals: RMSFTerminalConfig = field(default_factory=RMSFTerminalConfig)
+    # Convert values whose .xvg header declares nm / nm^2 to the metric's display unit.
+    convert_units: bool = True
     # |z| threshold for masking outliers; None/0 disables (default). Large excursions in
     # MD observables are usually real events, so only enable this to drop known artefacts.
     outlier_threshold: Optional[float] = None
@@ -305,6 +316,14 @@ class MDConfig:
                 title='Number of Hydrogen bonds',
                 ylabel='Number of hydrogen bonds',
                 is_holo_only=False,
+                data_format='two_column'
+            ),
+            AnalysisMetric(
+                name='hbonds_lig',
+                file_pattern='hbonds_lig*.dat',
+                title='Protein–ligand hydrogen bonds',
+                ylabel='Number of hydrogen bonds',
+                is_holo_only=True,
                 data_format='two_column'
             ),
             AnalysisMetric(

@@ -11,12 +11,16 @@ from .config import (
     PCACompareConfig,
     PCAGromacsRunConfig,
     PCATerminalDetectionConfig,
+    PCAJointConfig,
+    PCAJointSystem,
 )
 from .parser import PCAParser
 from .plotter import PCAPlotter
 from .analyzer import PCAAnalyzer
 from .compare import PCAComparisonAnalyzer
 from .runner import PCAGromacsRunner
+from .joint import JointPCAResult, joint_pca, rmsip
+from .joint_analyzer import PCAJointAnalyzer
 
 __all__ = [
     'PCAConfig',
@@ -29,4 +33,10 @@ __all__ = [
     'PCAAnalyzer',
     'PCAComparisonAnalyzer',
     'PCAGromacsRunner',
+    'PCAJointConfig',
+    'PCAJointSystem',
+    'PCAJointAnalyzer',
+    'JointPCAResult',
+    'joint_pca',
+    'rmsip',
 ]

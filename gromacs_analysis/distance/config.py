@@ -4,7 +4,7 @@ Configuration classes for ligand-protein distance analysis.
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import Union, List, Optional
 
 from ..md.config import PlotConfig
 
@@ -48,7 +48,7 @@ class DistanceConfig:
     topology: Path
     trajectories: List[Path]
     ligand_selection: str = "resname UNK"
-    residue_ids: Optional[List[int]] = None
+    residue_ids: Optional[List[Union[int, str]]] = None  # ints or chain-qualified "A:45"
     residue_selection: Optional[str] = None
     auto_detect_residues: bool = False
     auto_detect_cutoff: float = 5.0

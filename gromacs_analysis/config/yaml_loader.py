@@ -155,6 +155,8 @@ def load_yaml_config(yaml_file: Path) -> MDConfig:
         slope_threshold=stability_data.get('slope_threshold', 0.01),
         min_points=stability_data.get('min_points', 100),
         apply_to_all_metrics=bool(stability_data.get('apply_to_all_metrics', True)),
+        method=stability_data.get('method', 'chodera'),
+        n_candidates=int(stability_data.get('n_candidates', 100)),
     )
 
     # Create config

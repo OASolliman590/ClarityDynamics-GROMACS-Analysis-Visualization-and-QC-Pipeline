@@ -9,8 +9,40 @@ own width/height.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Optional, Tuple
+
+logger = logging.getLogger(__name__)
+
+_EXPORT_STATE = {"available": None}
+
+_UNAVAILABLE_MARKERS = (
+    "chrome", "chromium", "kaleido", "browser", "choreographer", "plotly_get_chrome",
+)
+
+REMEDY = (
+    "Static image export (SVG/PNG/PDF) is unavailable: Plotly's Kaleido could not start a browser. "
+    "Interactive HTML is still written and SVG falls back to matplotlib where supported. "
+    "To enable it, run `plotly_get_chrome`, or set BROWSER_PATH to a Chrome/Chromium binary, "
+    "or install the legacy exporter with `pip install \"kaleido<1\"`."
+)
+
+
+class StaticExportUnavailable(RuntimeError):
+    """Raised once static export has been found unusable in this process."""
+
+
+def reset_static_export_state() -> None:
+    """Forget the cached availability (used by tests)."""
+    _EXPORT_STATE["available"] = None
+
+
+def _is_dependency_error(exc: BaseException) -> bool:
+    if isinstance(exc, (ImportError, FileNotFoundError)):
+        return True
+    text = f"{type(exc).__name__} {exc}".lower()
+    return any(marker in text for marker in _UNAVAILABLE_MARKERS)
 
 
 def figure_size(fig, default_width: int, default_height: int) -> Tuple[int, int]:
@@ -29,9 +61,19 @@ def write_static(
     scale: float = 2,
 ) -> None:
     """Write SVG/PNG/PDF at the figure's own size (or the defaults) and ``scale``."""
+    if _EXPORT_STATE["available"] is False:
+        raise StaticExportUnavailable(REMEDY)
     fmt = fmt or Path(path).suffix.lstrip(".")
     w, h = figure_size(fig, width, height)
-    fig.write_image(str(path), format=fmt, width=w, height=h, scale=scale)
+    try:
+        fig.write_image(str(path), format=fmt, width=w, height=h, scale=scale)
+    except Exception as exc:  # noqa: BLE001 - classify and re-raise
+        if _is_dependency_error(exc):
+            _EXPORT_STATE["available"] = False
+            logger.warning(REMEDY + f" (first error: {type(exc).__name__}: {(str(exc).splitlines() or [''])[0][:200]})")
+            raise StaticExportUnavailable(REMEDY) from exc
+        raise
+    _EXPORT_STATE["available"] = True
 
 
 def scaled_height(n_rows: int, per_row: int = 22, base: int = 220, minimum: int = 420, maximum: int = 4000) -> int:

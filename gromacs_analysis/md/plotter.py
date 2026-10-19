@@ -670,7 +670,7 @@ class MDPlotter:
                 upper_limit = max(all_y_values) + 1
                 fig.update_yaxes(range=[0, upper_limit])
             
-            elif metric_name == 'hbonds':
+            elif metric_name in ('hbonds', 'hbonds_lig'):
                 upper_limit = max(all_y_values) + 2
                 fig.update_yaxes(range=[0, upper_limit])
             

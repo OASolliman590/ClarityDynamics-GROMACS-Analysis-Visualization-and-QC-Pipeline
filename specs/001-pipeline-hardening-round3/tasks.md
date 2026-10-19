@@ -12,15 +12,15 @@ behaviour, so each story starts with a failing test that has a known answer.
 
 ## Phase 1: Setup
 
-- [ ] T001 Add `pytest` and `MDAnalysis` to `requirements-dev.txt` and confirm `pip install -e .` works for the CI install path in `requirements-dev.txt`
-- [ ] T002 [P] Create empty test modules `tests/test_round3_scientific.py`, `tests/test_round3_engineering.py`, `tests/test_end_to_end_trajectory.py` with module docstrings
+- [X] T001 Add `pytest` and `MDAnalysis` to `requirements-dev.txt` and confirm `pip install -e .` works for the CI install path in `requirements-dev.txt`
+- [X] T002 [P] Create empty test modules `tests/test_round3_scientific.py`, `tests/test_round3_engineering.py`, `tests/test_end_to_end_trajectory.py` with module docstrings
 
 ---
 
 ## Phase 2: Foundational (blocking)
 
-- [ ] T003 Implement `StaticExportUnavailable` and a cached availability check in `gromacs_analysis/utils/figure_export.py`. On the first failing `write_image`, decide whether the error means a missing browser/Kaleido. If so, log one warning naming the remedies (`plotly_get_chrome`, `BROWSER_PATH`, `pip install "kaleido<1"`) and raise `StaticExportUnavailable` without retrying on later calls. Every plotter depends on this (US9 and all figure-producing stories).
-- [ ] T004 Create `gromacs_analysis/utils/units.py` with `parse_xvg_units(content) -> (x_unit, y_unit)`, `display_unit_from_label(label)` and `conversion_factor(declared, display) -> (factor, status)`. Statuses: `converted`, `matched`, `assumed`, `unrecognised`. Recognise `nm`, `nm^2`, `nm\S2\N`, `nm²`, `Å`, `A`, `Angstrom`, `Å²`, `A^2` (US3, used by US6).
+- [X] T003 Implement `StaticExportUnavailable` and a cached availability check in `gromacs_analysis/utils/figure_export.py`. On the first failing `write_image`, decide whether the error means a missing browser/Kaleido. If so, log one warning naming the remedies (`plotly_get_chrome`, `BROWSER_PATH`, `pip install "kaleido<1"`) and raise `StaticExportUnavailable` without retrying on later calls. Every plotter depends on this (US9 and all figure-producing stories).
+- [X] T004 Create `gromacs_analysis/utils/units.py` with `parse_xvg_units(content) -> (x_unit, y_unit)`, `display_unit_from_label(label)` and `conversion_factor(declared, display) -> (factor, status)`. Statuses: `converted`, `matched`, `assumed`, `unrecognised`. Recognise `nm`, `nm^2`, `nm\S2\N`, `nm²`, `Å`, `A`, `Angstrom`, `Å²`, `A^2` (US3, used by US6).
 
 ---
 
@@ -29,23 +29,23 @@ behaviour, so each story starts with a failing test that has a known answer.
 **Goal**: One PCA basis for all systems, every system projected on it, RMSIP overlap.
 **Independent Test**: Synthetic systems with a known displacement direction recover it as PC1 (|cos| ≥ 0.95); self RMSIP = 1.
 
-- [ ] T005 [P] [US1] Write tests in `tests/test_round3_scientific.py` for:
+- [X] T005 [P] [US1] Write tests in `tests/test_round3_scientific.py` for:
   - Kabsch fit removing a pure rotation;
   - PC1 recovery on synthetic data;
   - shared projections having identical eigenvectors;
   - RMSIP equal to 1 on the diagonal, symmetric, and in [0, 1];
   - an atom-count mismatch raising an error that names the systems.
-- [ ] T006 [US1] Implement `gromacs_analysis/pca/joint.py`:
+- [X] T006 [US1] Implement `gromacs_analysis/pca/joint.py`:
   - `kabsch_fit(coords, ref)`;
   - `iterative_fit(systems, iterations=2)`;
   - `joint_pca(coords_by_system, n_components)`, returning a `JointPCAResult`. Eigenvalues are sorted descending and eigenvector signs normalised so the largest-|component| is positive.
   - `rmsip(a, b, k)`;
   - `load_coordinates(topology, trajectories, selection, stride, max_frames)` using MDAnalysis, imported lazily.
   - Validation: "S ≥ 1; every system has ≥ 2 frames; n_overlap ≤ min(3N, frames−1)".
-- [ ] T007 [US1] Add `PCAJointConfig` (fields per contracts/config-schema.md) and `PCAJointSystem` to `gromacs_analysis/pca/config.py`, and export them from `gromacs_analysis/pca/__init__.py`.
-- [ ] T008 [US1] Implement `PCAJointAnalyzer` in `gromacs_analysis/pca/joint_analyzer.py`. It writes the CSV/JSON listed in contracts/outputs.md and draws `joint_projection_12`, `joint_density_12`, `rmsip_heatmap` and `joint_scree` with the shared palette (APO grey) via `write_static`.
-- [ ] T009 [US1] Add the `pca_joint` stage. The builder goes in `gromacs_analysis/pipeline/stage_builders.py`, supporting `systems` or `auto_discover`. Register it in `gromacs_analysis/pipeline/yaml_loader.py` (stage list and dispatch) and in `gromacs_analysis/pipeline/runner.py`.
-- [ ] T010 [US1] Add a test in `tests/test_round3_scientific.py` that runs `PCAJointAnalyzer` on synthetic coordinates with HTML-only output and asserts the files listed in contracts/outputs.md exist.
+- [X] T007 [US1] Add `PCAJointConfig` (fields per contracts/config-schema.md) and `PCAJointSystem` to `gromacs_analysis/pca/config.py`, and export them from `gromacs_analysis/pca/__init__.py`.
+- [X] T008 [US1] Implement `PCAJointAnalyzer` in `gromacs_analysis/pca/joint_analyzer.py`. It writes the CSV/JSON listed in contracts/outputs.md and draws `joint_projection_12`, `joint_density_12`, `rmsip_heatmap` and `joint_scree` with the shared palette (APO grey) via `write_static`.
+- [X] T009 [US1] Add the `pca_joint` stage. The builder goes in `gromacs_analysis/pipeline/stage_builders.py`, supporting `systems` or `auto_discover`. Register it in `gromacs_analysis/pipeline/yaml_loader.py` (stage list and dispatch) and in `gromacs_analysis/pipeline/runner.py`.
+- [X] T010 [US1] Add a test in `tests/test_round3_scientific.py` that runs `PCAJointAnalyzer` on synthetic coordinates with HTML-only output and asserts the files listed in contracts/outputs.md exist.
 
 ---
 
@@ -53,8 +53,8 @@ behaviour, so each story starts with a failing test that has a known answer.
 
 **Independent Test**: The workflow file is valid YAML with a `pull_request` trigger and a Python 3.10/3.12 matrix running pytest.
 
-- [ ] T011 [US2] Create `.github/workflows/tests.yml`: triggers on push to main and on pull_request; matrix Python 3.10 and 3.12; installs `requirements.txt` plus `requirements-dev.txt`; runs `pytest -q`.
-- [ ] T012 [P] [US2] Add a test in `tests/test_round3_engineering.py` that parses the workflow and checks the triggers, matrix and pytest step.
+- [X] T011 [US2] Create `.github/workflows/tests.yml`: triggers on push to main and on pull_request; matrix Python 3.10 and 3.12; installs `requirements.txt` plus `requirements-dev.txt`; runs `pytest -q`.
+- [X] T012 [P] [US2] Add a test in `tests/test_round3_engineering.py` that parses the workflow and checks the triggers, matrix and pytest step.
 
 ---
 
@@ -62,15 +62,15 @@ behaviour, so each story starts with a failing test that has a known answer.
 
 **Independent Test**: The same RMSD given once as an nm `.xvg` and once in Å is reported within 1%.
 
-- [ ] T013 [P] [US3] Write tests in `tests/test_round3_scientific.py`:
+- [X] T013 [P] [US3] Write tests in `tests/test_round3_scientific.py`:
   - nm→Å factor 10;
   - nm²→Å² factor 100;
   - GROMACS `nm\S2\N` parsing;
   - a file without a header leaves values unchanged with status `assumed`;
   - an unknown unit gives `unrecognised` and no change;
   - an MD processor end-to-end case for two systems.
-- [ ] T014 [US3] In `gromacs_analysis/md/data_processor.py`, record the header y-unit per file, apply the conversion to values (not to the RMSF residue axis), and store a `unit_metadata` dict on each metric result. Add `convert_units: bool = True` to `MDConfig` in `gromacs_analysis/md/config.py` and an optional `AnalysisMetric.unit`.
-- [ ] T015 [US3] Write the `Value_Unit_Declared`, `Value_Unit`, `Value_Unit_Factor` and `Value_Unit_Status` columns in `gromacs_analysis/md/analyzer.py::_save_statistics_csv`, and pass `convert_units` through `gromacs_analysis/pipeline/yaml_loader.py`.
+- [X] T014 [US3] In `gromacs_analysis/md/data_processor.py`, record the header y-unit per file, apply the conversion to values (not to the RMSF residue axis), and store a `unit_metadata` dict on each metric result. Add `convert_units: bool = True` to `MDConfig` in `gromacs_analysis/md/config.py` and an optional `AnalysisMetric.unit`.
+- [X] T015 [US3] Write the `Value_Unit_Declared`, `Value_Unit`, `Value_Unit_Factor` and `Value_Unit_Status` columns in `gromacs_analysis/md/analyzer.py::_save_statistics_csv`, and pass `convert_units` through `gromacs_analysis/pipeline/yaml_loader.py`.
 
 ---
 
@@ -78,17 +78,17 @@ behaviour, so each story starts with a failing test that has a known answer.
 
 **Independent Test**: On relaxation-plus-noise series, the detected start lies within ±15% of the true end in at least 9 of 10 seeds.
 
-- [ ] T016 [P] [US4] Write tests in `tests/test_round3_scientific.py`:
+- [X] T016 [P] [US4] Write tests in `tests/test_round3_scientific.py`:
   - statistical inefficiency ≈ 1 for white noise and ≈ (1+φ)/(1−φ) for AR(1) within 25%;
   - detection accuracy over 10 seeds;
   - a short series reports `insufficient_data`;
   - `equilibration.json` is written;
   - MM/PBSA `start_frame` filtering;
   - the VMD `rmsf_first_frame`.
-- [ ] T017 [US4] Implement `gromacs_analysis/utils/equilibration.py` with `statistical_inefficiency(x, mintime=3)` and `detect_equilibration(x, n_candidates=100, max_fraction=0.5)`, returning `(t0, g, n_eff)`. Use pymbar when `use_pymbar=True` and it is importable.
-- [ ] T018 [US4] Add `method` ("chodera" | "window", default "chodera") and `n_candidates` to `StabilityConfig` in `gromacs_analysis/md/config.py`. In `gromacs_analysis/md/data_processor.py::_apply_stability_window`, dispatch on the method and store records. Write `data/equilibration.json` from `gromacs_analysis/md/analyzer.py`. Wire the new keys in `gromacs_analysis/pipeline/yaml_loader.py` and `gromacs_analysis/config/yaml_loader.py`.
-- [ ] T019 [US4] Add `start_frame: Optional[int] = None` to `MMPBSAConfig` in `gromacs_analysis/mmpbsa/config.py`. In `gromacs_analysis/mmpbsa/processor.py`, recompute delta components and binding energy from frame-level data with `Frame #` ≥ start_frame and record `frames_used` in the QC metadata. Wire it in `gromacs_analysis/pipeline/yaml_loader.py`.
-- [ ] T020 [US4] Add `rmsf_first_frame` to the VMD helper in `gromacs_analysis/pipeline/upstream.py` (`measure rmsf $sel first N`).
+- [X] T017 [US4] Implement `gromacs_analysis/utils/equilibration.py` with `statistical_inefficiency(x, mintime=3)` and `detect_equilibration(x, n_candidates=100, max_fraction=0.5)`, returning `(t0, g, n_eff)`. Use pymbar when `use_pymbar=True` and it is importable.
+- [X] T018 [US4] Add `method` ("chodera" | "window", default "chodera") and `n_candidates` to `StabilityConfig` in `gromacs_analysis/md/config.py`. In `gromacs_analysis/md/data_processor.py::_apply_stability_window`, dispatch on the method and store records. Write `data/equilibration.json` from `gromacs_analysis/md/analyzer.py`. Wire the new keys in `gromacs_analysis/pipeline/yaml_loader.py` and `gromacs_analysis/config/yaml_loader.py`.
+- [X] T019 [US4] Add `start_frame: Optional[int] = None` to `MMPBSAConfig` in `gromacs_analysis/mmpbsa/config.py`. In `gromacs_analysis/mmpbsa/processor.py`, recompute delta components and binding energy from frame-level data with `Frame #` ≥ start_frame and record `frames_used` in the QC metadata. Wire it in `gromacs_analysis/pipeline/yaml_loader.py`.
+- [X] T020 [US4] Add `rmsf_first_frame` to the VMD helper in `gromacs_analysis/pipeline/upstream.py` (`measure rmsf $sel first N`).
 
 ---
 
@@ -96,40 +96,40 @@ behaviour, so each story starts with a failing test that has a known answer.
 
 **Independent Test**: A 10-SEM separation gives P ≥ 0.99; identical ligands give P in [0.4, 0.6].
 
-- [ ] T021 [P] [US5] Write tests in `tests/test_round3_scientific.py`:
+- [X] T021 [P] [US5] Write tests in `tests/test_round3_scientific.py`:
   - the separation probabilities;
   - determinism with a fixed seed;
   - APO exclusion (exact name and configured list) while "Apomorphine" is kept;
   - all systems excluded raises an error;
   - `Replicate_Means` is used when present.
-- [ ] T022 [US5] Write a `Replicate_Means` column (semicolon-separated) in `gromacs_analysis/md/analyzer.py::_save_statistics_csv`.
-- [ ] T023 [US5] Add `exclude_systems`, `n_bootstrap` (default 2000) and `seed` (default 0) to `RankingConfig` in `gromacs_analysis/ranking/config.py`. Implement exclusion and the bootstrap in `gromacs_analysis/ranking/analyzer.py`, writing `ligand_ranking.csv` (new columns), `rank_pairwise.csv` and `excluded_systems.csv`.
-- [ ] T024 [US5] In `gromacs_analysis/pipeline/yaml_loader.py::_build_ranking_config`, merge the APO system names from the md/md_compare stage configs into `exclude_systems`.
+- [X] T022 [US5] Write a `Replicate_Means` column (semicolon-separated) in `gromacs_analysis/md/analyzer.py::_save_statistics_csv`.
+- [X] T023 [US5] Add `exclude_systems`, `n_bootstrap` (default 2000) and `seed` (default 0) to `RankingConfig` in `gromacs_analysis/ranking/config.py`. Implement exclusion and the bootstrap in `gromacs_analysis/ranking/analyzer.py`, writing `ligand_ranking.csv` (new columns), `rank_pairwise.csv` and `excluded_systems.csv`.
+- [X] T024 [US5] In `gromacs_analysis/pipeline/yaml_loader.py::_build_ranking_config`, merge the APO system names from the md/md_compare stage configs into `exclude_systems`.
 
 ---
 
 ## Phase 8: User Story 6 - Protein–ligand H-bonds (P3)
 
-- [ ] T025 [P] [US6] Write tests in `tests/test_round3_scientific.py`: the VMD script contains `hbonds_lig_.dat` and a per-ligand `hbonds_lig_<name>.dat`; the `hbonds_lig` default metric exists and is split per ligand.
-- [ ] T026 [US6] Add a `calc_hbonds_ligand` proc and its calls in `gromacs_analysis/pipeline/upstream.py`. Add the `hbonds_lig` default metric and a `LIGAND_METRICS` entry in `gromacs_analysis/md/config.py`, and give `hbonds_lig` the H-bond axis limits in `gromacs_analysis/md/plotter.py`.
+- [X] T025 [P] [US6] Write tests in `tests/test_round3_scientific.py`: the VMD script contains `hbonds_lig_.dat` and a per-ligand `hbonds_lig_<name>.dat`; the `hbonds_lig` default metric exists and is split per ligand.
+- [X] T026 [US6] Add a `calc_hbonds_ligand` proc and its calls in `gromacs_analysis/pipeline/upstream.py`. Add the `hbonds_lig` default metric and a `LIGAND_METRICS` entry in `gromacs_analysis/md/config.py`, and give `hbonds_lig` the H-bond axis limits in `gromacs_analysis/md/plotter.py`.
 
 ---
 
 ## Phase 9: User Story 7 - Flat-profile terminal detection (P3)
 
-- [ ] T027 [P] [US7] Write tests in `tests/test_round3_scientific.py`: an exactly flat core with 6/10 elevated termini is trimmed at least 6/10; a non-degenerate profile gives an unchanged threshold.
-- [ ] T028 [US7] Update `robust_threshold` in `gromacs_analysis/pca/prep.py`: when MAD = 0, scale = 0.7413·IQR, and if that is also 0, max(0.05·|median|, 1e-6).
+- [X] T027 [P] [US7] Write tests in `tests/test_round3_scientific.py`: an exactly flat core with 6/10 elevated termini is trimmed at least 6/10; a non-degenerate profile gives an unchanged threshold.
+- [X] T028 [US7] Update `robust_threshold` in `gromacs_analysis/pca/prep.py`: when MAD = 0, scale = 0.7413·IQR, and if that is also 0, max(0.05·|median|, 1e-6).
 
 ---
 
 ## Phase 10: User Story 8 - Multi-chain distances (P3)
 
-- [ ] T029 [P] [US8] Write tests in `tests/test_round3_scientific.py` on a two-chain MDAnalysis universe built in memory:
+- [X] T029 [P] [US8] Write tests in `tests/test_round3_scientific.py` on a two-chain MDAnalysis universe built in memory:
   - "A:45" selects only chain A;
   - a bare 45 returns two entries with a warning;
   - labels are chain-prefixed;
   - an unknown chain raises an error.
-- [ ] T030 [US8] Re-key residues by `(chain, resid)` in `gromacs_analysis/distance/processor.py` (resolution, distance loop, labels) and adapt consumers in `gromacs_analysis/distance/analyzer.py`, `plotter.py` and `compare.py` that look residues up by `resid`.
+- [X] T030 [US8] Re-key residues by `(chain, resid)` in `gromacs_analysis/distance/processor.py` (resolution, distance loop, labels) and adapt consumers in `gromacs_analysis/distance/analyzer.py`, `plotter.py` and `compare.py` that look residues up by `resid`.
 
 ---
 

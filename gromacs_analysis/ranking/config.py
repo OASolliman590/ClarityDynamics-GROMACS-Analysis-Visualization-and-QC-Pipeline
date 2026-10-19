@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 
 @dataclass
@@ -25,8 +25,16 @@ class RankingConfig:
         "mmpbsa_total": "lower",
     })
 
+    # Reference systems never ranked; systems named exactly "APO" (any case) are always excluded.
+    exclude_systems: List[str] = field(default_factory=list)
+    # Bootstrap resamples for rank probabilities (0 disables) and the random seed.
+    n_bootstrap: int = 2000
+    seed: int = 0
+
     def __post_init__(self) -> None:
         self.output_dir = Path(self.output_dir)
+        if self.n_bootstrap < 0:
+            raise ValueError("RankingConfig.n_bootstrap must be >= 0")
         if self.md_stats_file:
             self.md_stats_file = Path(self.md_stats_file)
         if self.mmpbsa_data_dir:
