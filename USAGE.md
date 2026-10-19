@@ -2,6 +2,90 @@
 
 This guide explains practical use cases for the maintained package pipeline, from quick checks to full multi-ligand reporting.
 
+## 0) Setup Without YAML
+
+`clarity-setup` builds the pipeline configuration from what is on disk, so you only
+choose names and stages. Install the interface extra first:
+
+```bash
+pip install -e ".[tui]"     # textual (interface) + paramiko (SSH)
+```
+
+### Where the data can be
+
+| Data location | Option | Notes |
+|---|---|---|
+| This computer | (default) | `clarity-setup tui /path/to/simulations` |
+| Any SSH host | `--ssh HOST` | Host or `~/.ssh/config` alias; key or agent authentication only. Unknown host keys are trusted on first use and remembered. |
+| HTCondor pool via condorctl | `--condorctl CONFIG` | Reuses the condorctl config (host, user, key, pool attributes such as `+Production`). |
+
+Discovery runs one `find` plus one residue listing per topology, so a remote scan is
+quick even on a slow link. Nothing is copied back.
+
+### What discovery recognises
+
+- **Systems and replicates**: folders such as `HOLO_LigA_1..3`, `LigB_rep1`, `APO-r2`,
+  or `LigC/rep1` are grouped into one system with numbered replicates.
+- **APO reference**: names containing `apo`, `free`, `unbound` or `noligand`. If no
+  folder is named that way, a system without ligands is used. Toggle it with `a`.
+- **Ligands**: residues in the topology (psf, pdb or gro) that are not protein,
+  solvent, ions or lipids. Residues that also occur in the APO system (cofactors
+  such as HEM) are not counted as ligands.
+- **Files**: the topology (psf > tpr > pdb > gro); a processed trajectory
+  (`*noPBC*`, `*nojump*`, `*center*`, `*fit*`) over the raw one; metric files
+  (`RMSD*`, `RMSF*`...); `FINAL_RESULTS_MMPBSA*`; and PCA `eigenval*`.
+- **Stages**: only the stages the inputs support are offered. For example, `mmpbsa`
+  needs `FINAL_RESULTS_MMPBSA` files and `md` needs metric files. Each unavailable
+  stage says why. `ttclust_batch` is off by default because it is slow.
+
+### Interactive interface
+
+```bash
+clarity-setup tui /path/to/simulations
+clarity-setup tui                         # reopen clarity_project.yaml, or ask where to connect
+```
+
+| Key | Action |
+|---|---|
+| `e` | Rename the selected system or ligand. Ligand names are labels only; selections keep `resname XXX`. |
+| `a` | Mark or unmark the selected system as the APO reference (excluded from ranking). |
+| `x` | Include or exclude the selected system or ligand. |
+| `s` | Save `clarity_project.yaml` and a validated `pipeline.yaml`. |
+| `r` | Run: locally, or in the background on the remote host (`nohup`, log in `<root>/clarity/pipeline.log`). |
+| `c` | Submit to HTCondor (remote connections only). |
+| `ctrl+r` | Rescan. Your names and choices are kept, new folders are added, and vanished ones are marked missing. |
+| `o` | Connect to a different location. |
+| `q` | Quit. |
+
+The **Stages** tab lists every stage with a checkbox. The **Preview** tab shows the
+exact YAML that will run.
+
+### Command line (scripts, notebooks, CI)
+
+```bash
+clarity-setup scan /data/inhA --json
+clarity-setup init /data/inhA \
+    --protein InhA \
+    --rename HOLO_LigA=Isoniazid_NAD --ligand INH=Isoniazid --ligand LigC:LGC=Compound_C \
+    --apo APO --exclude HOLO_LigB --stages qc,md,mmpbsa,prolif_batch,ranking
+clarity-setup run                                   # local data: runs here
+clarity-setup run --where host                      # remote data: start on that host
+clarity-setup run --where condor --cpus 8 --memory 16GB
+```
+
+`init` without ROOT re-reads `clarity_project.yaml` and keeps earlier edits. Exit
+codes:
+
+- 0: success;
+- 1: an invalid edit or an invalid configuration (the message says which);
+- 2: `scan` found no systems;
+- 3: Textual is not installed.
+
+HTCondor submission writes three files to `<root>/clarity/`: `pipeline.yaml`,
+`run_clarity.sh` and `run_clarity.sub`. It relies on the pool's shared filesystem
+(`should_transfer_files = NO`) and needs `gromacs-pipeline` installed on the
+execute nodes.
+
 ## 1) Setup
 
 ```bash

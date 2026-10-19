@@ -9,6 +9,22 @@ pip install -e .
 pip install -e ".[all]"   # optional: trajectory, ProLIF, clustering extras
 ```
 
+## Setup Without YAML
+
+`clarity-setup` finds your simulations, lets you name systems and ligands, and
+writes and runs the pipeline configuration for you, on this computer, over SSH
+or through a [condorctl](https://github.com/OASolliman590/condorctl) profile.
+
+```bash
+pip install -e ".[tui]"                       # Textual + paramiko
+clarity-setup tui /path/to/simulations        # interactive: rename, pick stages, save, run
+clarity-setup tui --ssh mycluster /data/inhA  # same, with data on a remote host
+clarity-setup init /path/to/simulations --rename HOLO_LigA=Isoniazid_NAD --ligand INH=Isoniazid
+clarity-setup run --where condor              # submit via HTCondor (shared filesystem)
+```
+
+See [USAGE.md](USAGE.md#0-setup-without-yaml) for details.
+
 ## Main Pipeline
 
 Create a project config:
@@ -39,6 +55,7 @@ gromacs-mmpbsa --help
 gromacs-pca --help
 gromacs-pipeline --help
 gromacs-orchestrate --help
+clarity-setup --help
 ```
 
 ## Usage Guide

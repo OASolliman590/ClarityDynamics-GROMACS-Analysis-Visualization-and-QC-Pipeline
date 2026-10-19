@@ -41,6 +41,10 @@ setup(
             'rdkit>=2022.9.1',
             'ipython',  # ProLIF ligand network rendering
         ],
+        'tui': [
+            'textual>=0.60',
+            'paramiko>=3.4',
+        ],
         'clustering': [
             'scikit-learn>=1.0.0',
         ],
@@ -70,6 +74,7 @@ setup(
             'gromacs-pca=gromacs_analysis.cli.pca_cli:main',
             'gromacs-pipeline=gromacs_analysis.cli.pipeline_cli:main',
             'gromacs-orchestrate=gromacs_analysis.cli.orchestrate_cli:main',
+            'clarity-setup=gromacs_analysis.setup.cli:main',
         ],
     },
     classifiers=[
