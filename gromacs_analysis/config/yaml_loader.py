@@ -171,7 +171,7 @@ def load_yaml_config(yaml_file: Path) -> MDConfig:
         sequence_topology=Path(data["sequence_topology"]) if data.get("sequence_topology") else None,
         sequence_selection=data.get("sequence_selection", "protein"),
         smoothing_window=data.get("smoothing_window", data.get("analysis", {}).get("smoothing_window", 1)),
-        outlier_threshold=data.get("outlier_threshold", data.get("analysis", {}).get("outlier_threshold", 3.0)),
+        outlier_threshold=data.get("outlier_threshold", data.get("analysis", {}).get("outlier_threshold")),
     )
     
     logger.info(f"Configuration loaded successfully")

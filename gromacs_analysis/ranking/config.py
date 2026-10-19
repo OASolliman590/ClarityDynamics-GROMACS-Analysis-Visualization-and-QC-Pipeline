@@ -12,14 +12,15 @@ class RankingConfig:
     md_stats_file: Optional[Path] = None
     mmpbsa_data_dir: Optional[Path] = None
     distance_summary_file: Optional[Path] = None
+    # Only metrics listed here contribute to rank_score. Defaults are limited to
+    # observables with a defensible direction for ligand binding: ligand pose
+    # stability, ligand-pocket proximity and MM/PBSA ΔTOTAL. Protein-wide
+    # descriptors (rmsd_prot, rmsf, rog, sasa, intra-protein hbonds) have no
+    # intrinsic "better" direction; add them explicitly if your hypothesis needs them.
     metric_directions: Dict[str, str] = field(default_factory=lambda: {
-        "rmsd_prot": "lower",
-        "rmsd_complex": "lower",
         "rmsd_lig": "lower",
-        "rmsf": "lower",
-        "rog": "lower",
-        "sasa": "lower",
-        "hbonds": "higher",
+        "rmsd_complex": "lower",
+        "comcom": "lower",
         "distance_mean": "lower",
         "mmpbsa_total": "lower",
     })

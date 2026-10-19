@@ -144,7 +144,9 @@ class MDConfig:
     time_step_ps: Optional[float] = None
     time_scale: Optional[float] = None
     smoothing_window: int = 1
-    outlier_threshold: float = 3.0
+    # |z| threshold for masking outliers; None/0 disables (default). Large excursions in
+    # MD observables are usually real events, so only enable this to drop known artefacts.
+    outlier_threshold: Optional[float] = None
     
     def __post_init__(self):
         """Convert paths to Path objects and set default metrics."""
@@ -164,7 +166,10 @@ class MDConfig:
         if self.time_scale is not None:
             self.time_scale = float(self.time_scale)
         self.smoothing_window = max(1, int(self.smoothing_window))
-        self.outlier_threshold = float(self.outlier_threshold)
+        if self.outlier_threshold is not None:
+            self.outlier_threshold = float(self.outlier_threshold)
+            if self.outlier_threshold <= 0:
+                self.outlier_threshold = None
         
         # Set default metrics if none provided
         if not self.metrics:
@@ -226,7 +231,7 @@ class MDConfig:
                 name='hbonds',
                 file_pattern='hbonds*.dat,Hbond*.dat',
                 title='Number of Hydrogen bonds',
-                ylabel='Change in the number of bonds',
+                ylabel='Number of hydrogen bonds',
                 is_holo_only=False,
                 data_format='two_column'
             ),
@@ -278,7 +283,7 @@ class MDConfig:
             time_step_ps=data.get('time_step_ps'),
             time_scale=data.get('time_scale'),
             smoothing_window=data.get('smoothing_window', 1),
-            outlier_threshold=data.get('outlier_threshold', 3.0),
+            outlier_threshold=data.get('outlier_threshold'),
         )
     
     def to_json(self, json_file: Path):

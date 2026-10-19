@@ -40,7 +40,7 @@ md:
   # time_step_ps: 2.0       # required when converting from frame
   # time_scale: 0.001       # optional explicit multiplier override
   smoothing_window: 1       # set >1 to apply centered rolling smoothing
-  outlier_threshold: 3.0    # z-score threshold for outlier removal
+  outlier_threshold: null   # optional |z| threshold to mask artefacts; null disables (recommended)
   systems:
     - name: "LigandA"
       dir_pattern: "HOLO_LigandA_{}"

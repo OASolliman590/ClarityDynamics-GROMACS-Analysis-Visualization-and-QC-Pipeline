@@ -31,7 +31,8 @@ class DistanceConfig:
         auto_detect_selection: MDAnalysis selection string for candidate residues
         auto_detect_method: Distance method for auto-detection: 'com' or 'min'
         method: Distance method: 'com' (COM-to-COM) or 'min' (min atom distance)
-        distance_scale: Multiply distances by this factor (e.g., 10.0 to convert nm to A)
+        distance_scale: Multiply distances by this factor. MDAnalysis coordinates are
+            always in Angstrom, so keep 1.0 for Å output and use 0.1 for nm output.
         time_unit: Unit of trajectory time ('ps', 'ns', 'frame', 'auto')
         time_step_ns: Optional timestep (ns) if time unit is 'frame'
         per_residue_plots: Whether to save per-residue plots

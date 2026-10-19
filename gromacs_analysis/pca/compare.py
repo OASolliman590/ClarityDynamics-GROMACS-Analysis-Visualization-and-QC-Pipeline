@@ -53,7 +53,17 @@ class PCAComparisonAnalyzer:
         data_dir = self.config.output_dir / "data"
         plots_created: List[str] = []
 
-        # 2D projection comparisons
+        # 2D projection comparisons.
+        # Each system's projections are onto its *own* eigenvectors, so PC axes are
+        # neither the same collective motions nor sign-consistent across systems.
+        # A quantitative comparison needs a common basis: run one gmx covar on the
+        # concatenated (identically fitted) trajectories and project every system
+        # onto those eigenvectors, or compare subspaces via RMSIP (gmx anaeig -over).
+        if self.config.compare_pairs and len(systems_data) > 1:
+            logger.warning(
+                "PCA projection overlays use system-specific eigenvectors; axes are not a common "
+                "basis. Use a joint covariance (concatenated trajectories) for quantitative comparison."
+            )
         for pair in self.config.compare_pairs:
             proj_series = self._collect_projection_series(systems_data, pair)
             if not proj_series:
@@ -195,6 +205,18 @@ class PCAComparisonAnalyzer:
                 )
             ))
 
+        fig.add_annotation(
+            text=(
+                "Each system projected on its own eigenvectors; axes are not a common basis "
+                "(qualitative comparison only)."
+            ),
+            xref="paper",
+            yref="paper",
+            x=0.5,
+            y=1.02,
+            showarrow=False,
+            font=dict(size=10),
+        )
         fig.update_layout(
             title=f"PCA Projection PC{pair[0]} vs PC{pair[1]} · {self.config.protein_name}",
             xaxis_title=f"PC{pair[0]}",

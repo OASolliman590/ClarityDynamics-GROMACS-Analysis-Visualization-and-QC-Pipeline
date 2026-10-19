@@ -243,7 +243,7 @@ def _build_md_config(data: Dict[str, Any], base_path: Path, defaults: Dict[str, 
         time_step_ps=data.get("time_step_ps"),
         time_scale=data.get("time_scale"),
         smoothing_window=data.get("smoothing_window", data.get("analysis", {}).get("smoothing_window", 1)),
-        outlier_threshold=data.get("outlier_threshold", data.get("analysis", {}).get("outlier_threshold", 3.0)),
+        outlier_threshold=data.get("outlier_threshold", data.get("analysis", {}).get("outlier_threshold")),
     )
 
 
@@ -353,6 +353,8 @@ def _build_qc_config(data: Dict[str, Any], base_path: Path, defaults: Dict[str, 
         ligand_selection=data.get("ligand_selection", "resname UNK"),
         expected_replicates=data.get("expected_replicates"),
         min_distance_cutoff=data.get("min_distance_cutoff"),
+        dissociation_cutoff=data.get("dissociation_cutoff", 5.0),
+        check_frame_times=bool(data.get("check_frame_times", True)),
         sample_stride=data.get("sample_stride", 10),
         max_frames=data.get("max_frames", 500),
         fail_on_error=bool(data.get("fail_on_error", False)),
@@ -1876,6 +1878,8 @@ def _qc_config_to_dict(config: QCConfig) -> Dict[str, Any]:
         "ligand_selection": config.ligand_selection,
         "expected_replicates": config.expected_replicates,
         "min_distance_cutoff": config.min_distance_cutoff,
+        "dissociation_cutoff": config.dissociation_cutoff,
+        "check_frame_times": config.check_frame_times,
         "sample_stride": config.sample_stride,
         "max_frames": config.max_frames,
         "fail_on_error": config.fail_on_error,
@@ -2273,7 +2277,7 @@ md:
   # time_step_ps: 2.0       # required when converting from frame
   # time_scale: 0.001       # optional explicit multiplier override
   smoothing_window: 1       # set >1 to apply centered rolling smoothing
-  outlier_threshold: 3.0    # z-score threshold for outlier removal
+  outlier_threshold: null   # optional |z| threshold to mask artefacts; null disables (recommended)
   systems:
     - name: "LigandA"
       dir_pattern: "HOLO_LigandA_{}"

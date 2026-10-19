@@ -218,41 +218,49 @@ class MMPBSAParser:
         """
         delta_components = {}
         
-        # Primary method: Look for "Delta (Complex - Receptor - Ligand):" section
+        # Primary method: Look for "Delta (Complex - Receptor - Ligand):" section.
+        # gmx_MMPBSA >= 1.5 columns: Average, SD(Prop.), SD, SEM(Prop.), SEM.
+        # Older releases: Average, Std. Dev., Std. Err. of Mean.
         delta_section_match = re.search(
             r"Delta \(Complex - Receptor - Ligand\):\s*\n([\s\S]*?)\n-+\s*\n-+\s*\n",
             content
+        ) or re.search(
+            r"Delta \(Complex - Receptor - Ligand\):\s*\n([\s\S]*?)(?:\n\s*\n|\Z)",
+            content
         )
-        
+
         if delta_section_match:
             delta_section = delta_section_match.group(1)
-            
-            # Extract components from delta section
-            # Pattern: ΔVDWAALS, ΔEEL, ΔEGB, ΔESURF, ΔGGAS, ΔGSOLV, ΔTOTAL
-            components = ['VDWAALS', 'EEL', 'EGB', 'ESURF', 'GGAS', 'GSOLV', 'TOTAL']
-            
+            components = [
+                'VDWAALS', 'EEL', 'EGB', 'EPB', 'ESURF', 'ENPOLAR', 'EDISPER',
+                'GGAS', 'GSOLV', 'TOTAL',
+            ]
+            number = r"-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?"
             for comp in components:
-                # Try different patterns
-                patterns = [
-                    rf"Δ{comp}\s+([\d.-]+)",  # Simple: ΔVDWAALS -30.5
-                    rf"Δ{comp}\s+=\s+([\d.-]+)",  # With equals: ΔVDWAALS = -30.5
-                    rf"Δ{comp}\s+([\d.-]+)\s+\(([\d.-]+)\)\s+\(([\d.-]+)\)",  # With SD: ΔVDWAALS -30.5 (1.2) (0.3)
-                ]
-                
-                for pattern in patterns:
-                    match = re.search(pattern, delta_section)
-                    if match:
-                        value = float(match.group(1))
-                        std_dev = float(match.group(2)) if len(match.groups()) >= 2 else 0.0
-                        std_err = float(match.group(3)) if len(match.groups()) >= 3 else 0.0
-                        
-                        delta_components[f'Δ{comp}'] = {
-                            'value': value,
-                            'std_dev': std_dev,
-                            'std_err': std_err
-                        }
-                        break
-        
+                match = re.search(
+                    rf"^[ \t]*Δ{comp}[ \t]*=?[ \t]+((?:{number}[ \t()]*)+)$",
+                    delta_section,
+                    re.MULTILINE,
+                )
+                if not match:
+                    continue
+                values = [float(v) for v in re.findall(number, match.group(1))]
+                if not values:
+                    continue
+                if len(values) >= 5:
+                    std_dev, std_err = values[2], values[4]
+                elif len(values) >= 3:
+                    std_dev, std_err = values[1], values[2]
+                elif len(values) == 2:
+                    std_dev, std_err = values[1], 0.0
+                else:
+                    std_dev, std_err = 0.0, 0.0
+                delta_components[f'Δ{comp}'] = {
+                    'value': values[0],
+                    'std_dev': std_dev,
+                    'std_err': std_err,
+                }
+
         # Alternative method: Look for FINAL RESULTS section
         if not delta_components:
             final_results_match = re.search(r'FINAL RESULTS:\s+\n([\s\S]+?)(?:\n\n|\Z)', content)

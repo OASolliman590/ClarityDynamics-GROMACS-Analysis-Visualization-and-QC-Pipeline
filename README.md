@@ -45,6 +45,10 @@ gromacs-orchestrate --help
 
 See [USAGE.md](./USAGE.md) for end-to-end use cases, stage combinations, expected outputs, and recommended run patterns.
 
+## Scientific Validity
+
+See [SCIENTIFIC_VALIDITY.md](./SCIENTIFIC_VALIDITY.md) for the statistical conventions (replicate SEM, block averaging), corrected defects, and methodological caveats to read before interpreting results.
+
 ## Orchestrated Upstream Workflow
 
 Template:

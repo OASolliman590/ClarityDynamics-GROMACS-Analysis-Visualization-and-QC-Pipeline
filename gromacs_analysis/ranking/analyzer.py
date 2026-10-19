@@ -44,16 +44,10 @@ class RankingAnalyzer:
                 lig = file_path.stem.replace("_results", "")
                 df = pd.read_csv(file_path)
                 qc_from_results = self._extract_qc_from_results_df(df)
-                total_rows = df[df["Component"].str.contains("Binding", case=False, na=False)]
-                total_val = None
-                for _, row in total_rows.iterrows():
-                    comp = str(row.get("Component", ""))
-                    if any(key in comp for key in ["TOTAL", "G", "DeltaG", "ΔG"]):
-                        total_val = float(row.get("Mean"))
-                        break
-                if total_val is None and not total_rows.empty:
-                    total_val = float(total_rows.iloc[0]["Mean"])
-                if total_val is not None:
+                total_val = self._select_total_binding(df)
+                if total_val is None:
+                    logger.warning(f"No ΔTOTAL / Binding_TOTAL row found in {file_path}; skipping MM/PBSA term.")
+                else:
                     metrics.setdefault(lig, {})["mmpbsa_total"] = total_val
 
                 qc_sidecar = self._extract_qc_from_sidecar(
@@ -102,13 +96,20 @@ class RankingAnalyzer:
 
         df = pd.DataFrame(data)
 
-        # Z-scores
+        # Z-scores. Only metrics with an explicit, physically meaningful direction
+        # contribute to the score; descriptive metrics (Rg, SASA, RMSF, protein RMSD,
+        # intra-protein H-bonds) are reported but have no "better" direction.
+        unscored = [m for m in all_metrics if m not in self.config.metric_directions]
+        if unscored:
+            logger.info(f"Metrics reported but not scored (no direction configured): {', '.join(unscored)}")
         for metric in all_metrics:
+            if metric not in self.config.metric_directions:
+                continue
             vals = df[metric].astype(float)
             if vals.isna().all():
                 continue
             z = (vals - vals.mean()) / (vals.std(ddof=0) if vals.std(ddof=0) else 1.0)
-            direction = self.config.metric_directions.get(metric, "lower")
+            direction = self.config.metric_directions[metric]
             if direction == "higher":
                 z = -z
             df[f"{metric}_z"] = z
@@ -116,8 +117,10 @@ class RankingAnalyzer:
         z_cols = [c for c in df.columns if c.endswith("_z")]
         if z_cols:
             df["rank_score"] = df[z_cols].mean(axis=1)
+            df["n_scored_metrics"] = df[z_cols].notna().sum(axis=1)
         else:
             df["rank_score"] = np.nan
+            df["n_scored_metrics"] = 0
 
         qc_metadata = qc_metadata or {}
         if qc_metadata:
@@ -144,6 +147,18 @@ class RankingAnalyzer:
             df = df.sort_values("rank_score", na_position="last")
 
         return df
+
+    @staticmethod
+    def _select_total_binding(df: pd.DataFrame) -> Optional[float]:
+        """Return the total effective binding energy (ΔTOTAL), never a partial term like ΔGGAS."""
+        if "Component" not in df.columns or "Mean" not in df.columns:
+            return None
+        components = df["Component"].astype(str).str.strip()
+        for name in ("Binding_TOTAL", "ΔTOTAL", "ΔGTOTAL", "DELTA TOTAL", "TOTAL"):
+            match = df[components == name]
+            if not match.empty:
+                return float(match.iloc[0]["Mean"])
+        return None
 
     @staticmethod
     def _as_float(value: Any) -> Optional[float]:
@@ -227,35 +242,72 @@ class RankingAnalyzer:
         }
 
     def _compute_stats(self, data_dir: Path) -> Optional[Path]:
-        """Compute ANOVA/t-tests where possible (distance summary only)."""
+        """Compare per-residue distance profiles between ligands.
+
+        Residues are matched across ligands, so this is a repeated-measures design:
+        a Friedman test across all ligands and pairwise Wilcoxon signed-rank tests
+        with Holm correction. The unit of observation is a residue's time- and
+        replicate-averaged distance; the tests ask whether one ligand sits
+        systematically closer to the selected residues than another. They are not
+        a substitute for replicate-level uncertainty of a binding metric.
+        """
         if not self.config.distance_summary_file or not self.config.distance_summary_file.exists():
             return None
 
         dist_df = pd.read_csv(self.config.distance_summary_file)
         if not {"Ligand", "MeanDistance"}.issubset(dist_df.columns):
             return None
+        residue_col = "Residue" if "Residue" in dist_df.columns else None
+        if residue_col is None:
+            logger.warning("Distance summary has no Residue column; skipping paired statistics.")
+            return None
 
-        groups = [group["MeanDistance"].values for _, group in dist_df.groupby("Ligand")]
-        if len(groups) < 2:
+        wide = dist_df.pivot_table(index=residue_col, columns="Ligand", values="MeanDistance", aggfunc="mean")
+        wide = wide.dropna(axis=0, how="any")
+        ligands = list(wide.columns)
+        if len(ligands) < 2 or len(wide) < 3:
             return None
 
         stats_rows = []
-        try:
-            f_val, p_val = scipy_stats.f_oneway(*groups)
-            stats_rows.append({"Test": "ANOVA", "F": f_val, "p": p_val})
-        except Exception as exc:
-            logger.warning(f"ANOVA failed: {exc}")
+        if len(ligands) >= 3:
+            try:
+                chi2, p_val = scipy_stats.friedmanchisquare(*[wide[lig].values for lig in ligands])
+                stats_rows.append({
+                    "Test": "Friedman",
+                    "Statistic": chi2,
+                    "p": p_val,
+                    "p_holm": p_val,
+                    "N_Residues": len(wide),
+                })
+            except Exception as exc:
+                logger.warning(f"Friedman test failed: {exc}")
 
-        ligands = dist_df["Ligand"].unique().tolist()
+        pairwise = []
         for i in range(len(ligands)):
             for j in range(i + 1, len(ligands)):
-                a = dist_df[dist_df["Ligand"] == ligands[i]]["MeanDistance"].values
-                b = dist_df[dist_df["Ligand"] == ligands[j]]["MeanDistance"].values
+                a = wide[ligands[i]].values
+                b = wide[ligands[j]].values
                 try:
-                    t_val, p_val = scipy_stats.ttest_ind(a, b, equal_var=False)
-                    stats_rows.append({"Test": "t-test", "GroupA": ligands[i], "GroupB": ligands[j], "t": t_val, "p": p_val})
+                    stat, p_val = scipy_stats.wilcoxon(a, b)
                 except Exception:
                     continue
+                pairwise.append({
+                    "Test": "Wilcoxon signed-rank (paired by residue)",
+                    "GroupA": ligands[i],
+                    "GroupB": ligands[j],
+                    "Statistic": stat,
+                    "MedianDiff": float(np.median(a - b)),
+                    "p": p_val,
+                    "N_Residues": len(wide),
+                })
+
+        # Holm-Bonferroni correction across pairwise comparisons.
+        m = len(pairwise)
+        running = 0.0
+        for rank, idx in enumerate(sorted(range(m), key=lambda k: pairwise[k]["p"])):
+            running = max(running, min(1.0, (m - rank) * pairwise[idx]["p"]))
+            pairwise[idx]["p_holm"] = running
+        stats_rows.extend(pairwise)
 
         if not stats_rows:
             return None

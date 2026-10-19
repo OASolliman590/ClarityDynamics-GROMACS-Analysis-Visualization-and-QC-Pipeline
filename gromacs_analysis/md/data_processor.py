@@ -12,6 +12,7 @@ Handles both single and replicate trajectory data with flexible file finding.
 
 import logging
 import re
+import warnings
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Union
 import numpy as np
@@ -48,7 +49,27 @@ class MDDataProcessor:
             config: MDConfig object
         """
         self.config = config
+        # Time units declared in GROMACS .xvg headers, keyed by file path.
+        self._header_time_units: Dict[str, str] = {}
         logger.info("MDDataProcessor initialized")
+
+    @staticmethod
+    def is_profile_metric(metric_name: str) -> bool:
+        """Return True for per-residue profiles (e.g. RMSF) whose x-axis is not time."""
+        return 'rmsf' in str(metric_name).lower()
+
+    @staticmethod
+    def _detect_header_time_unit(content: str) -> Optional[str]:
+        """Read the x-axis unit from a GROMACS .xvg header (`@ xaxis label "Time (ps)"`)."""
+        match = re.search(r'^@\s*xaxis\s+label\s+"([^"]*)"', content, re.MULTILINE)
+        if not match:
+            return None
+        label = match.group(1).lower()
+        unit_match = re.search(r'\((ps|ns|fs|us|µs)\)', label) or re.search(r'\b(ps|ns)\b', label)
+        if not unit_match:
+            return None
+        unit = unit_match.group(1)
+        return unit if unit in {"ps", "ns"} else None
     
     # ==================== FILE FINDING ====================
     
@@ -217,7 +238,11 @@ class MDDataProcessor:
         try:
             with open(file_path, 'r') as f:
                 content = f.read()
-            
+
+            header_unit = self._detect_header_time_unit(content)
+            if header_unit:
+                self._header_time_units[str(file_path)] = header_unit
+
             return self._parse_content(content, data_format, filename=file_path.name)
             
         except Exception as e:
@@ -404,11 +429,16 @@ class MDDataProcessor:
     def _process_single_trajectory(self, file_path: Path, metric: AnalysisMetric) -> Dict:
         """
         Process a single trajectory file.
-        
+
+        Statistics are computed on the unsmoothed (but optionally outlier-filtered)
+        data; smoothing only affects the plotted ``values`` series. For time series
+        the standard error of the mean is estimated by block averaging, which
+        accounts for the strong autocorrelation of consecutive MD frames.
+
         Args:
             file_path: Path to data file
             metric: AnalysisMetric object
-            
+
         Returns:
             Dict with time, values, mode, and stats
         """
@@ -418,79 +448,86 @@ class MDDataProcessor:
             logger.warning(f"No valid data in {file_path}")
             return None
 
-        time_data, time_metadata = self._convert_time_axis(time_data, metric)
-        
-        # Clean data and apply optional smoothing
-        time_clean, value_clean = self._remove_outliers(
-            time_data,
-            value_data,
-            threshold=self.config.outlier_threshold,
+        time_data, time_metadata = self._convert_time_axis(
+            time_data, metric, header_unit=self._header_time_units.get(str(file_path))
         )
-        value_clean = self._apply_smoothing(value_clean)
-        
-        # Calculate statistics
-        stats = self._calculate_statistics(value_clean)
-        
+
+        keep = self._outlier_mask(value_data, metric)
+        time_clean = time_data[keep]
+        value_raw = value_data[keep]
+        value_clean = self._apply_smoothing(value_raw)
+
+        stats = self._calculate_statistics(value_raw)
+        if not self.is_profile_metric(metric.name):
+            stats.update(self._block_average_sem(value_raw))
+
         return {
             'time': time_clean,
             'values': value_clean,
+            'values_raw': value_raw,
             'mode': 'single',
             'stats': stats,
             'n_points': len(value_clean),
             'time_metadata': time_metadata,
         }
-    
+
     def _process_replicates(self, file_paths: List[Path], metric: AnalysisMetric) -> Dict:
         """
         Process multiple replicate files and calculate average with error bands.
-        
+
+        Replicates are aligned frame-by-frame, so outliers are masked as NaN
+        rather than deleted (deleting would shift later frames in time).
+        The uncertainty of the reported mean is the between-replicate standard
+        error (SD of per-replicate means / sqrt(n)), because independent
+        replicates are the only statistically independent samples available.
+
         Args:
             file_paths: List of Paths to replicate files
             metric: AnalysisMetric object
-            
+
         Returns:
             Dict with time, mean, upper, lower bounds, mode, and stats
         """
+        replicate_raw = []
         replicate_data = []
         replicate_times = []
-        
+
         # Load all replicates
         time_metadata = None
         for file_path in file_paths:
             time_data, value_data = self.parse_data_file(file_path, metric.data_format)
-            
+
             if len(value_data) > 0:
-                time_data, metadata = self._convert_time_axis(time_data, metric)
+                time_data, metadata = self._convert_time_axis(
+                    time_data, metric, header_unit=self._header_time_units.get(str(file_path))
+                )
                 if time_metadata is None:
                     time_metadata = metadata
-                time_clean, value_clean = self._remove_outliers(
-                    time_data,
-                    value_data,
-                    threshold=self.config.outlier_threshold,
-                )
-                smoothed_values = self._apply_smoothing(value_clean)
-                replicate_times.append(np.array(time_clean[:len(smoothed_values)]))
-                replicate_data.append(smoothed_values)
+                raw = np.asarray(value_data, dtype=float).copy()
+                raw[~self._outlier_mask(raw, metric)] = np.nan
+                replicate_times.append(np.asarray(time_data))
+                replicate_raw.append(raw)
+                replicate_data.append(self._apply_smoothing(raw))
             else:
                 logger.warning(f"Empty replicate: {file_path}")
-        
+
         if not replicate_data:
             logger.error("No valid replicate data found")
             return None
-        
+
         # Ensure all replicates have same length (truncate to minimum)
-        min_length = min(len(rep) for rep in replicate_data)
+        lengths = [len(rep) for rep in replicate_data]
+        min_length = min(lengths)
+        if len(set(lengths)) > 1:
+            logger.warning(
+                "Replicates of %s have different lengths %s; truncating to the shortest (%d points).",
+                metric.name,
+                lengths,
+                min_length,
+            )
         replicate_data = [rep[:min_length] for rep in replicate_data]
-        
-        # Convert to numpy array (rows=replicates, cols=time points)
-        replicate_array = np.array(replicate_data)
-        
-        # Calculate statistics across replicates
-        mean_values = replicate_array.mean(axis=0)
-        std_values = replicate_array.std(axis=0)
-        upper_bound = mean_values + std_values
-        lower_bound = mean_values - std_values
-        
+        replicate_raw = [rep[:min_length] for rep in replicate_raw]
+
         # Preserve trajectory x-axis from first replicate.
         time_array = np.array(replicate_times[0][:min_length])
         for idx, rep_time in enumerate(replicate_times[1:], start=2):
@@ -501,12 +538,12 @@ class MDDataProcessor:
                     metric.name,
                 )
                 break
-        
-        # Calculate overall statistics
-        stats = self._calculate_statistics(mean_values)
-        stats['std_mean'] = np.mean(std_values)
-        stats['n_replicates'] = len(replicate_data)
-        
+
+        mean_values, upper_bound, lower_bound, std_values = self._replicate_band(replicate_data)
+
+        stats = self._replicate_statistics(replicate_raw)
+        stats['std_mean'] = float(np.nanmean(std_values)) if np.any(np.isfinite(std_values)) else 0.0
+
         return {
             'time': time_array,
             'mean': mean_values,
@@ -517,11 +554,95 @@ class MDDataProcessor:
             'n_points': min_length,
             'n_replicates': len(replicate_data),
             'replicates': replicate_data,
+            'replicates_raw': replicate_raw,
             'time_metadata': time_metadata,
         }
 
-    def _convert_time_axis(self, time_data: np.ndarray, metric: AnalysisMetric) -> Tuple[np.ndarray, Dict]:
-        """Convert trajectory x-axis to configured output unit and report provenance metadata."""
+    @staticmethod
+    def _replicate_band(replicates: List[np.ndarray]) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Per-frame mean and ±1 sample SD (ddof=1) across replicates, NaN-aware."""
+        rep_array = np.vstack(replicates).astype(float)
+        with np.errstate(invalid='ignore'), warnings.catch_warnings():
+            warnings.simplefilter('ignore', RuntimeWarning)
+            mean_values = np.nanmean(rep_array, axis=0)
+            if rep_array.shape[0] > 1:
+                std_values = np.nanstd(rep_array, axis=0, ddof=1)
+            else:
+                std_values = np.zeros(rep_array.shape[1])
+        std_values = np.nan_to_num(std_values, nan=0.0)
+        return mean_values, mean_values + std_values, mean_values - std_values, std_values
+
+    def _replicate_statistics(self, replicates_raw: List[np.ndarray]) -> Dict:
+        """Pooled descriptive statistics plus between-replicate uncertainty of the mean."""
+        pooled = np.concatenate([np.asarray(rep, dtype=float) for rep in replicates_raw])
+        stats = self._calculate_statistics(pooled)
+        rep_means = [float(np.nanmean(rep)) for rep in replicates_raw if np.any(np.isfinite(rep))]
+        n_rep = len(rep_means)
+        stats['n_replicates'] = n_rep
+        stats['replicate_means'] = rep_means
+        if n_rep:
+            # Mean of replicate means: each replicate is weighted equally.
+            stats['mean'] = float(np.mean(rep_means))
+        if n_rep > 1:
+            between_sd = float(np.std(rep_means, ddof=1))
+            stats['between_replicate_sd'] = between_sd
+            stats['sem'] = between_sd / np.sqrt(n_rep)
+            stats['sem_method'] = 'between_replicates'
+        return stats
+
+    def _block_average_sem(self, values: np.ndarray, min_blocks: int = 4) -> Dict:
+        """
+        Standard error of the mean of a correlated time series by block averaging.
+
+        Uses the Flyvbjerg-Petersen blocking transformation: the series is
+        repeatedly halved by averaging neighbouring points and the naive SEM is
+        computed at each level. The largest estimate with at least ``min_blocks``
+        blocks is reported (a conservative plateau estimate).
+
+        Returns:
+            Dict with ``sem``, ``sem_method``, ``n_effective`` and
+            ``statistical_inefficiency``.
+        """
+        data = np.asarray(values, dtype=float)
+        data = data[np.isfinite(data)]
+        n = len(data)
+        if n < 2 * min_blocks:
+            return {}
+
+        variance = float(np.var(data, ddof=1))
+        naive_sem = np.sqrt(variance / n) if variance > 0 else 0.0
+        best = naive_sem
+        blocked = data
+        while len(blocked) >= 2 * min_blocks:
+            if len(blocked) % 2:
+                blocked = blocked[:-1]
+            blocked = 0.5 * (blocked[0::2] + blocked[1::2])
+            sem = float(np.sqrt(np.var(blocked, ddof=1) / len(blocked)))
+            best = max(best, sem)
+
+        if best <= 0 or variance <= 0:
+            return {'sem': 0.0, 'sem_method': 'block_average', 'n_effective': float(n),
+                    'statistical_inefficiency': 1.0}
+        n_eff = variance / (best ** 2)
+        return {
+            'sem': float(best),
+            'sem_method': 'block_average',
+            'n_effective': float(min(n, n_eff)),
+            'statistical_inefficiency': float(max(1.0, n / n_eff)),
+        }
+
+    def _convert_time_axis(
+        self,
+        time_data: np.ndarray,
+        metric: AnalysisMetric,
+        header_unit: Optional[str] = None,
+    ) -> Tuple[np.ndarray, Dict]:
+        """Convert trajectory x-axis to configured output unit and report provenance metadata.
+
+        When the input unit is ``auto`` a unit declared in the .xvg header takes
+        precedence over the magnitude-based heuristic, which is ambiguous for
+        short runs (e.g. 0-1000 ps vs. 0-1000 ns).
+        """
         if len(time_data) == 0:
             return time_data, {
                 "input_unit": self.config.time_unit_input,
@@ -532,7 +653,7 @@ class MDDataProcessor:
                 "conversion_mode": "none",
             }
 
-        if self.config.time_scale is not None:
+        if self.config.time_scale is not None and not self.is_profile_metric(metric.name):
             converted = np.asarray(time_data, dtype=float) * float(self.config.time_scale)
             return converted, {
                 "input_unit": self.config.time_unit_input,
@@ -543,11 +664,30 @@ class MDDataProcessor:
                 "conversion_mode": "explicit_scale",
             }
 
-        inferred_input = (
-            self._infer_time_unit(time_data, metric)
-            if self.config.time_unit_input == "auto"
-            else self.config.time_unit_input
-        )
+        if self.is_profile_metric(metric.name):
+            # Residue index axis: never rescale it as if it were time.
+            return np.asarray(time_data), {
+                "input_unit": "residue",
+                "output_unit": "residue",
+                "applied_scale": 1.0,
+                "time_step_ps": self.config.time_step_ps,
+                "inferred_input_unit": "residue",
+                "conversion_mode": "none",
+            }
+
+        if self.config.time_unit_input != "auto":
+            inferred_input = self.config.time_unit_input
+        elif header_unit:
+            inferred_input = header_unit
+        else:
+            inferred_input = self._infer_time_unit(time_data, metric)
+            if inferred_input in {"ps", "ns"}:
+                logger.warning(
+                    "Time unit for %s inferred as '%s' from magnitude only; set time_unit_input "
+                    "explicitly to avoid ps/ns ambiguity.",
+                    metric.name,
+                    inferred_input,
+                )
         output_unit = inferred_input if self.config.time_unit_output == "auto" else self.config.time_unit_output
 
         converted = np.asarray(time_data, dtype=float)
@@ -621,39 +761,45 @@ class MDDataProcessor:
     
     # ==================== STATISTICS & UTILITIES ====================
     
-    def _remove_outliers(self, time_data: np.ndarray, value_data: np.ndarray,
-                        threshold: float = 3.0) -> Tuple[np.ndarray, np.ndarray]:
+    def _outlier_mask(self, value_data: np.ndarray, metric: Optional[AnalysisMetric] = None) -> np.ndarray:
         """
-        Remove outliers using Z-score method.
-        
-        Args:
-            time_data: Time array
-            value_data: Value array
-            threshold: Z-score threshold (default: 3.0)
-            
-        Returns:
-            Tuple of (cleaned_time, cleaned_values)
-        """
-        if len(value_data) < 3:
-            return time_data, value_data
+        Boolean keep-mask from an optional |z-score| filter.
 
-        if np.nanstd(value_data) == 0:
-            return time_data, value_data
-        
-        try:
-            z_scores = np.abs(scipy_stats.zscore(value_data))
-            if not np.all(np.isfinite(z_scores)):
-                return time_data, value_data
-            mask = z_scores < threshold
-            
-            n_outliers = len(value_data) - np.sum(mask)
-            if n_outliers > 0:
-                logger.info(f"Removed {n_outliers} outliers (threshold={threshold})")
-            
-            return time_data[mask], value_data[mask]
-        except Exception as e:
-            logger.warning(f"Outlier removal failed: {e}")
-            return time_data, value_data
+        Disabled when ``outlier_threshold`` is None/0. Never applied to per-residue
+        profiles (RMSF), where large values are genuine flexible regions, not noise.
+        Note that for MD observables large excursions (e.g. ligand unbinding,
+        conformational transitions) are usually signal, so filtering should only
+        be used to drop known artefacts.
+        """
+        values = np.asarray(value_data, dtype=float)
+        keep = np.ones(len(values), dtype=bool)
+        threshold = self.config.outlier_threshold
+        if threshold is None or threshold <= 0 or len(values) < 3:
+            return keep
+        if metric is not None and self.is_profile_metric(metric.name):
+            return keep
+
+        finite = np.isfinite(values)
+        if finite.sum() < 3 or np.nanstd(values) == 0:
+            return keep
+
+        z_scores = np.abs((values - np.nanmean(values)) / np.nanstd(values))
+        keep = ~(finite & (z_scores >= threshold))
+        n_outliers = int(len(values) - keep.sum())
+        if n_outliers > 0:
+            logger.info(
+                "Masked %d outlier point(s) (|z| >= %s)%s",
+                n_outliers,
+                threshold,
+                f" for {metric.name}" if metric is not None else "",
+            )
+        return keep
+
+    def _remove_outliers(self, time_data: np.ndarray, value_data: np.ndarray,
+                         threshold: Optional[float] = None) -> Tuple[np.ndarray, np.ndarray]:
+        """Backward-compatible wrapper returning filtered (time, values)."""
+        keep = self._outlier_mask(value_data)
+        return np.asarray(time_data)[keep], np.asarray(value_data)[keep]
 
     def _apply_smoothing(self, values: np.ndarray) -> np.ndarray:
         """Apply centered rolling mean when smoothing_window is greater than 1."""
@@ -679,12 +825,14 @@ class MDDataProcessor:
         Returns:
             Dict with mean, std, min, max, median, q1, q3, count
         """
+        data = np.asarray(data, dtype=float)
+        data = data[np.isfinite(data)]
         if len(data) == 0:
             return {}
-        
+
         return {
             'mean': float(np.mean(data)),
-            'std': float(np.std(data)),
+            'std': float(np.std(data, ddof=1)) if len(data) > 1 else 0.0,
             'min': float(np.min(data)),
             'max': float(np.max(data)),
             'median': float(np.median(data)),
@@ -865,7 +1013,12 @@ class MDDataProcessor:
         return all_processed_data
 
     def _apply_stability_window(self, all_data: Dict) -> None:
-        """Trim metrics to stable window based on configured metric."""
+        """Trim time-series metrics to the stable window detected on the configured metric.
+
+        Per-residue profiles (RMSF) are never trimmed by frame index; RMSF over the
+        production window must be recomputed upstream (e.g. ``gmx rmsf -b``).
+        The detected window start is recorded on every trimmed metric.
+        """
         target_metric = self.config.stability.metric
         window = max(5, int(self.config.stability.window))
         std_threshold = float(self.config.stability.std_threshold)
@@ -890,14 +1043,33 @@ class MDDataProcessor:
             start_idx = self._detect_stable_start(time, series, window, std_threshold, slope_threshold)
             if start_idx <= 0:
                 continue
+            start_time = float(time[start_idx]) if len(time) > start_idx else None
 
             for metric_name, data in system_data.items():
                 if not self.config.stability.apply_to_all_metrics and metric_name != target_metric:
                     continue
-                self._trim_metric_data(data, start_idx)
+                if self.is_profile_metric(metric_name):
+                    logger.info(
+                        "%s: %s is a per-residue profile and was not trimmed; recompute it over "
+                        "the stable window (t >= %s) upstream.",
+                        system_name,
+                        metric_name,
+                        start_time,
+                    )
+                    continue
+                metric_start = self._index_for_time(data.get("time"), start_time, start_idx)
+                self._trim_metric_data(data, metric_start)
+                data["stable_start_index"] = metric_start
+                data["stable_start_time"] = start_time
 
-            system_data["stable_start_index"] = start_idx
-            system_data["stable_start_time"] = float(time[start_idx]) if len(time) > start_idx else None
+    @staticmethod
+    def _index_for_time(time: Optional[np.ndarray], start_time: Optional[float], fallback: int) -> int:
+        """Map the detected start time onto another metric's own time axis."""
+        if time is None or start_time is None or len(time) == 0:
+            return fallback
+        arr = np.asarray(time, dtype=float)
+        idx = int(np.searchsorted(arr, start_time, side="left"))
+        return min(idx, len(arr))
 
     def _detect_stable_start(
         self,
@@ -932,7 +1104,11 @@ class MDDataProcessor:
         if data.get("mode") == "single":
             data["time"] = data["time"][start_idx:]
             data["values"] = data["values"][start_idx:]
-            data["stats"] = self._calculate_statistics(data["values"])
+            raw = data.get("values_raw")
+            raw = raw[start_idx:] if raw is not None else data["values"]
+            data["values_raw"] = raw
+            data["stats"] = self._calculate_statistics(raw)
+            data["stats"].update(self._block_average_sem(raw))
             data["n_points"] = len(data["values"])
             return
 
@@ -943,10 +1119,15 @@ class MDDataProcessor:
             data["lower"] = data["lower"][start_idx:]
             if "replicates" in data:
                 data["replicates"] = [rep[start_idx:] for rep in data["replicates"]]
-                rep_array = np.array(data["replicates"])
-                data["mean"] = rep_array.mean(axis=0)
-                std = rep_array.std(axis=0)
-                data["upper"] = data["mean"] + std
-                data["lower"] = data["mean"] - std
-            data["stats"] = self._calculate_statistics(data["mean"])
+                mean, upper, lower, _ = self._replicate_band(data["replicates"])
+                data["mean"], data["upper"], data["lower"] = mean, upper, lower
+            raw = data.get("replicates_raw") or data.get("replicates")
+            if raw:
+                raw = [rep[start_idx:] for rep in raw]
+                data["replicates_raw"] = raw
+                data["stats"] = self._replicate_statistics(raw)
+                band = np.asarray(data["upper"]) - np.asarray(data["mean"])
+                data["stats"]["std_mean"] = float(np.nanmean(band)) if len(band) else 0.0
+            else:
+                data["stats"] = self._calculate_statistics(data["mean"])
             data["n_points"] = len(data["mean"])

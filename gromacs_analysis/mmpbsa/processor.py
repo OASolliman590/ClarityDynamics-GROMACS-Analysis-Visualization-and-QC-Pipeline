@@ -322,32 +322,23 @@ class MMPBSAProcessor:
                 frame_tables.append(frame_df)
         
         # Calculate statistics
-        delta_result = {}
-        for comp_name, values in delta_components.items():
-            if values:
-                delta_result[comp_name] = {
-                    'mean': np.mean(values),
-                    'std': np.std(values) if len(values) > 1 else 0.0,
-                    'n': len(values)
-                }
-        
-        binding_result = {}
-        for key, values in binding_energy.items():
-            if values:
-                binding_result[key] = {
-                    'mean': np.mean(values),
-                    'std': np.std(values) if len(values) > 1 else 0.0,
-                    'n': len(values)
-                }
-        
-        entropy_result = {}
-        for key, values in entropy.items():
-            if values:
-                entropy_result[key] = {
-                    'mean': np.mean(values),
-                    'std': np.std(values) if len(values) > 1 else 0.0,
-                    'n': len(values)
-                }
+        # Replicates are the independent samples: report the sample SD (ddof=1)
+        # across replicate averages and the corresponding standard error.
+        delta_result = {
+            comp_name: self._replicate_summary(values)
+            for comp_name, values in delta_components.items()
+            if values
+        }
+        binding_result = {
+            key: self._replicate_summary(values)
+            for key, values in binding_energy.items()
+            if values
+        }
+        entropy_result = {
+            key: self._replicate_summary(values)
+            for key, values in entropy.items()
+            if values
+        }
         
         return {
             'delta_components': delta_result,
@@ -368,31 +359,49 @@ class MMPBSAProcessor:
         Returns:
             Formatted dictionary
         """
-        # Convert delta components format
+        # Single run: 'std' is the frame-to-frame SD and 'sem' the SEM reported by
+        # gmx_MMPBSA. That SEM assumes uncorrelated frames and is optimistic;
+        # independent replicates are needed for a defensible uncertainty.
+        delta_components = data.get('delta_components', {})
         delta_result = {}
-        for comp_name, comp_data in data.get('delta_components', {}).items():
+        for comp_name, comp_data in delta_components.items():
             delta_result[comp_name] = {
                 'mean': comp_data['value'],
                 'std': comp_data.get('std_dev', 0.0),
-                'n': 1
+                'sem': comp_data.get('std_err', 0.0),
+                'n': 1,
+                'uncertainty': 'frame_sd',
             }
-        
-        # Convert binding energy format
+
+        # Convert binding energy format, reusing the matching Delta term's spread.
+        binding_sources = {
+            'GGAS': ['ΔGGAS'],
+            'GSOLV': ['ΔGSOLV'],
+            'TOTAL': ['ΔTOTAL', 'ΔGTOTAL'],
+        }
         binding_result = {}
         for key, value in data.get('binding_energy', {}).items():
+            source = next(
+                (delta_components[name] for name in binding_sources.get(key, []) if name in delta_components),
+                {},
+            )
             binding_result[key] = {
                 'mean': value,
-                'std': 0.0,
-                'n': 1
+                'std': source.get('std_dev', 0.0),
+                'sem': source.get('std_err', 0.0),
+                'n': 1,
+                'uncertainty': 'frame_sd',
             }
-        
+
         # Convert entropy format
         entropy_result = {}
         for key, entropy_data in data.get('entropy', {}).items():
             entropy_result[key] = {
                 'mean': entropy_data.get('value', 0.0),
                 'std': entropy_data.get('std_dev', 0.0),
-                'n': 1
+                'sem': entropy_data.get('std_err', 0.0),
+                'n': 1,
+                'uncertainty': 'frame_sd',
             }
         
         return {
@@ -478,8 +487,22 @@ class MMPBSAProcessor:
                 
                 if values:
                     row[col] = np.mean(values)
-                    row[f'{col} SD'] = np.std(values) if len(values) > 1 else 0.0
+                    row[f'{col} SD'] = np.std(values, ddof=1) if len(values) > 1 else 0.0
             
             combined_data.append(row)
         
         return pd.DataFrame(combined_data)
+
+    @staticmethod
+    def _replicate_summary(values: List[float]) -> Dict[str, float]:
+        """Mean, sample SD (ddof=1) and SEM over replicate averages."""
+        arr = np.asarray(values, dtype=float)
+        n = len(arr)
+        std = float(np.std(arr, ddof=1)) if n > 1 else 0.0
+        return {
+            'mean': float(np.mean(arr)),
+            'std': std,
+            'sem': std / np.sqrt(n) if n > 1 else 0.0,
+            'n': n,
+            'uncertainty': 'between_replicates' if n > 1 else 'none',
+        }

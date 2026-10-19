@@ -96,12 +96,18 @@ proc gyr_radius {sel} {
     if {[$sel num] <= 0} {
         error "gyr_radius: must have at least one atom in selection"
     }
+    # Mass-weighted radius of gyration (consistent with gmx gyrate).
     set com [center_of_mass $sel]
     set sum 0
-    foreach coord [$sel get {x y z}] {
-        set sum [expr {$sum + [veclength2 [vecsub $coord $com]]}]
+    set mass 0
+    foreach coord [$sel get {x y z}] m [$sel get mass] {
+        set sum [expr {$sum + $m * [veclength2 [vecsub $coord $com]]}]
+        set mass [expr {$mass + $m}]
     }
-    return [expr {sqrt($sum / ([$sel num] + 0.0))}]
+    if {$mass == 0} {
+        error "gyr_radius: total mass is zero"
+    }
+    return [expr {sqrt($sum / $mass)}]
 }
 
 proc pmodulo {n m} {

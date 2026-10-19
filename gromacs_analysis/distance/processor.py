@@ -77,24 +77,27 @@ class DistanceProcessor:
 
             for ts in u.trajectory:
                 time_ns.append(self._convert_time(ts))
+                box = self._box(ts)
 
                 if self.config.method == "com":
                     ligand_com = ligand.center_of_mass()
                     for res in residues:
                         res_com = res.atoms.center_of_mass()
-                        dist = np.linalg.norm(res_com - ligand_com) * self.config.distance_scale
+                        dist = self._com_distance(res_com, ligand_com, box) * self.config.distance_scale
                         distances_this_rep[res.resid].append(dist)
                 else:
                     lig_positions = ligand.positions
                     for res in residues:
                         res_positions = res.atoms.positions
-                        dist = np.min(distance_array(res_positions, lig_positions)) * self.config.distance_scale
+                        dist = np.min(distance_array(res_positions, lig_positions, box=box)) * self.config.distance_scale
                         distances_this_rep[res.resid].append(dist)
 
                 if self.config.include_overall:
                     protein = u.select_atoms("protein")
                     if protein.n_atoms > 0:
-                        overall_dist = np.linalg.norm(protein.center_of_mass() - ligand.center_of_mass()) * self.config.distance_scale
+                        overall_dist = self._com_distance(
+                            protein.center_of_mass(), ligand.center_of_mass(), box
+                        ) * self.config.distance_scale
                         overall_this_rep.append(overall_dist)
 
             time_array = np.array(time_ns, dtype=float)
@@ -194,18 +197,19 @@ class DistanceProcessor:
             if max_frames is not None and frames_used >= int(max_frames):
                 break
             frames_used += 1
+            box = self._box(ts)
 
             if method == "com":
                 lig_com = ligand.center_of_mass()
                 for res in residues:
-                    dist = np.linalg.norm(res.atoms.center_of_mass() - lig_com) * self.config.distance_scale
+                    dist = self._com_distance(res.atoms.center_of_mass(), lig_com, box) * self.config.distance_scale
                     resid = int(res.resid)
                     if dist < min_dist[resid]:
                         min_dist[resid] = dist
             else:
                 lig_positions = ligand.positions
                 for res in residues:
-                    dist = np.min(distance_array(res.atoms.positions, lig_positions)) * self.config.distance_scale
+                    dist = np.min(distance_array(res.atoms.positions, lig_positions, box=box)) * self.config.distance_scale
                     resid = int(res.resid)
                     if dist < min_dist[resid]:
                         min_dist[resid] = dist
@@ -236,6 +240,31 @@ class DistanceProcessor:
         )
 
         return selected, residue_labels
+
+    @staticmethod
+    def _box(ts) -> Optional[np.ndarray]:
+        """Unit-cell dimensions for minimum-image distances, or None without a valid box."""
+        dims = getattr(ts, "dimensions", None)
+        if dims is None:
+            return None
+        dims = np.asarray(dims, dtype=np.float32)
+        if len(dims) < 6 or not np.all(np.isfinite(dims[:3])) or np.any(dims[:3] <= 0):
+            return None
+        return dims
+
+    @staticmethod
+    def _com_distance(a: np.ndarray, b: np.ndarray, box: Optional[np.ndarray]) -> float:
+        """Distance between two points under the minimum-image convention.
+
+        Centres of mass are only meaningful if each group is whole; trajectories
+        should be pre-processed (e.g. ``gmx trjconv -pbc mol -center``).
+        """
+        delta = np.asarray(a, dtype=np.float64) - np.asarray(b, dtype=np.float64)
+        if box is not None:
+            from MDAnalysis.lib.distances import minimize_vectors  # noqa: WPS433
+
+            delta = minimize_vectors(delta.reshape(1, 3).astype(np.float32), box)[0]
+        return float(np.linalg.norm(delta))
 
     def _convert_time(self, ts) -> float:
         if self.config.time_unit == "frame":

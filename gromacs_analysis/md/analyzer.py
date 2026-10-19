@@ -200,7 +200,14 @@ class MDAnalyzer:
                     row['N_Replicates'] = metric_data['n_replicates']
                 if 'std_mean' in stats:
                     row['Std_Mean'] = stats['std_mean']
-                
+                # Uncertainty of the mean: between-replicate SEM for replicates,
+                # block-averaged SEM (autocorrelation-aware) for single runs.
+                row['SEM'] = stats.get('sem')
+                row['SEM_Method'] = stats.get('sem_method')
+                row['Between_Replicate_SD'] = stats.get('between_replicate_sd')
+                row['N_Effective'] = stats.get('n_effective')
+                row['Stable_Start_Time'] = metric_data.get('stable_start_time')
+
                 rows.append(row)
         
         if not rows:
@@ -361,19 +368,28 @@ class MDAnalyzer:
                 
                 # Statistics Summary
                 f.write("## Statistics Summary\n\n")
-                f.write("| System | Metric | Mean | Std | Min | Max |\n")
-                f.write("|--------|--------|------|-----|-----|-----|\n")
-                
+                f.write("| System | Metric | Mean | SEM | Std | Min | Max |\n")
+                f.write("|--------|--------|------|-----|-----|-----|-----|\n")
+
                 for system_name, system_data in all_data.items():
                     for metric_name, metric_data in system_data.items():
                         stats = metric_data.get('stats', {})
+                        sem = stats.get('sem')
+                        sem_text = f"{sem:.3f}" if sem is not None else "n/a"
                         f.write(f"| {system_name} | {metric_name} | "
                                f"{stats.get('mean', 0):.3f} | "
+                               f"{sem_text} | "
                                f"{stats.get('std', 0):.3f} | "
                                f"{stats.get('min', 0):.3f} | "
                                f"{stats.get('max', 0):.3f} |\n")
-                
+
                 f.write("\n")
+                f.write(
+                    "Std is the spread of the observable over frames (pooled over replicates). "
+                    "SEM is the uncertainty of the mean: between-replicate SD/sqrt(n) when "
+                    "replicates exist, otherwise a block-averaged estimate that accounts for "
+                    "frame-to-frame correlation. Compare systems using SEM, not Std.\n\n"
+                )
                 
                 # Footer
                 f.write("---\n\n")
