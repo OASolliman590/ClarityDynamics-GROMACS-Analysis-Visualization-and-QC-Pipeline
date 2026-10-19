@@ -41,6 +41,15 @@ md:
   # time_scale: 0.001       # optional explicit multiplier override
   smoothing_window: 1       # set >1 to apply centered rolling smoothing
   outlier_threshold: null   # optional |z| threshold to mask artefacts; null disables (recommended)
+  # Several ligands in ONE complex (e.g. inhibitor + cofactor): ligand RMSD and COM-COM
+  # become one metric/plot per ligand (files RMSD_<name>.dat, comcom_<name>.dat).
+  # ligands: ["INH", "NAD"]
+  rmsf_terminals:            # flexible termini drawn faded between two dashed boundary lines
+    enabled: true
+    mad_multiplier: 3.0
+    smoothing_window: 3
+    stable_run: 3
+    max_terminal_fraction: 0.25
   systems:
     - name: "LigandA"
       dir_pattern: "HOLO_LigandA_{}"
@@ -324,6 +333,19 @@ prolif_batch:
   enabled: false
   base_dir: "./1-MD/analysis"
   output_dir: "./analysis_outputs/prolif_batch"
+  # Automatic per-ligand discovery: every directory matching the pattern is grouped by
+  # {ligand}; {rep} directories become replicates. Explicit systems below override matches.
+  auto_discover:
+    pattern: "HOLO_{ligand}_{rep}"
+    topology: "step3_input.psf"
+    trajectory: "step5_production_noPBC.xtc"
+    # include: ["LigandA", "LigandB"]
+    # exclude: ["LigandC"]
+  # ligands: auto              # detect every non-protein/solvent/ion residue -> one run per ligand
+  # ligand_exclude: ["NAD"]    # with ligands: auto
+  lignetwork_kind: "aggregate" # interactions present in >= lignetwork_threshold of frames
+  lignetwork_threshold: 0.3
+  occupancy_top_n: 25
   systems:
     - name: "LigandA"
       ligand_name: "LigandA"
@@ -378,6 +400,10 @@ ttclust_batch:
   enabled: false
   base_dir: "./1-MD/analysis"
   output_dir: "./analysis_outputs/ttclust_batch"
+  auto_discover:
+    pattern: "HOLO_{ligand}_{rep}"
+    topology: "step3_input.psf"
+    trajectory: "step5_production_noPBC.xtc"
   stride: 10
   logfile: "clustering.log"
   select_traj: "all"

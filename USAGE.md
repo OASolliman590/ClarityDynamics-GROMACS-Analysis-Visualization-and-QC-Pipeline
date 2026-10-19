@@ -96,9 +96,31 @@ Current visualization defaults support:
 - residue-level barcode QC filtering (`only_interacting_residues`, `min_interaction_frames`, optional `max_residues`)
 
 Expected barcode outputs:
-- static SVG barcode
+- static SVG barcode (height grows with the number of interaction rows)
 - interactive HTML barcode
 - `barcode_qc_repN.csv` with per-residue interaction-frame counts
+
+Per-ligand figures (`outputs` includes `occupancy`):
+- `occupancy_heatmap` — residue × interaction occupancy (mean ± SD over replicates in the hover), sized to the residue count
+- `occupancy_top_residues` — the `occupancy_top_n` most contacted residues with SD error bars
+- `lignetwork` — aggregated over the trajectory (`lignetwork_kind: aggregate`, interactions present in ≥ `lignetwork_threshold` of frames); use `frame` for the old first-frame view
+
+Automated per-ligand runs (`prolif_batch`):
+
+```yaml
+prolif_batch:
+  base_dir: "./1-MD/analysis"
+  auto_discover:                     # HOLO_<ligand>_<rep>/ -> one system per ligand, reps as replicates
+    pattern: "HOLO_{ligand}_{rep}"
+    topology: "step3_input.psf"
+    trajectory: "step5_production_noPBC.xtc"
+  ligands: auto                      # several ligands in one complex -> one run per ligand residue
+  # ligand_exclude: ["NAD"]
+```
+
+`ligands: auto` keeps every residue that is not protein, water, ion or lipid. Use an explicit list
+(`["INH", {name: NAD, selection: "resname NAD and segid B"}]`) when you need custom selections.
+Runs are named `<system>_<ligand>` and feed `prolif_compare` (`from_prolif_batch: true`) unchanged.
 
 ### Use Case H: TTClust Conformational Clustering
 
@@ -111,6 +133,34 @@ Typical outputs:
 - representative cluster PDBs
 
 Use `stride` and selection fields to control runtime and clustering scope.
+
+`ttclust_batch` accepts the same `auto_discover` block as `prolif_batch`, so every ligand found
+on disk is clustered without listing systems. Besides TTClust's own images, each run writes
+`data/clusters_summary.csv`, `data/cluster_assignment.csv` and two figures drawn from
+`clustering.log`: `ttclust_populations` (cluster share of frames) and `ttclust_timeline`
+(cluster membership along the concatenated, strided frames).
+
+### Figures, colours and multi-ligand systems
+
+- Every system keeps one colour across all stages: APO/reference in neutral grey, ligands in a
+  fixed, colour-blind-checked order (blue, orange, aqua, yellow, magenta, green, violet, red).
+  Beyond eight ligands a dash pattern is added rather than reusing a colour alone.
+- Static exports (SVG/PNG) keep each figure's own size and use `plot_config.scale` as resolution,
+  so fonts stay readable and content-sized figures (heatmaps, barcodes) are not squeezed.
+- Several ligand-bound systems: each gets its own line, legend entry and band in every MD plot;
+  `rmsd_combined` overlays the APO backbone with every complex.
+- Several ligands in one complex: set `md.ligands: ["INH", "NAD"]`. Ligand RMSD and COM-COM become
+  `rmsd_lig_<name>` / `comcom_<name>` metrics; the VMD helper writes matching
+  `RMSD_<name>.dat` / `comcom_<name>.dat` when its task lists the same `ligands`.
+- RMSF: flexible termini (smoothed RMSF above median + k·MAD, the rule used for the PCA core) are
+  drawn faded inside grey bands with two dashed boundary lines and an explanatory note; the
+  detected region is saved to `data/rmsf_terminal_detection.json`. Configure via `md.rmsf_terminals`.
+- PCA: ligand colour vs grey APO, light→dark within a system for trajectory progress, diamond
+  markers for means, Viridis free-energy surfaces, PC time series on the real time axis.
+- MM/PBSA entropy: interaction entropy and C2 entropy are read from `FINAL_RESULTS*.dat`
+  (also when results come from CSV). `entropy_<system>` shows ΔTOTAL, −TΔS and
+  ΔG = ΔTOTAL + (−TΔS); `entropy_compare` compares systems; `data/entropy_summary.csv` holds the
+  numbers. Interaction entropy with σ(ΔE_int) > 3.6 kcal/mol is hatched as unreliable.
 
 ### Use Case I: Cross-Ligand Scoring and Prioritization
 

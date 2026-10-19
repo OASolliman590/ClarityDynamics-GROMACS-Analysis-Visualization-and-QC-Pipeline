@@ -31,7 +31,7 @@ class FELConfig:
     pairs: List[str] = field(default_factory=lambda: ["12"])
     contours: int = 7
     step: int = 2
-    colorscale: str = "jet"
+    colorscale: str = "Viridis"  # perceptually uniform; avoid rainbow scales such as jet
     overlay_projection: bool = True
     include_probability: bool = False
     include_entropy: bool = False
@@ -124,6 +124,8 @@ class PCAConfig:
     apo_base_dir: Optional[Path] = None  # Optional separate APO directory
     systems: list = field(default_factory=list)
     n_pcs: int = 10
+    # Ligand-bound system colour (hex). None -> first categorical slot; batches assign slots in order.
+    color: Optional[str] = None
     plot_config: PlotConfig = field(default_factory=PlotConfig)
     fel: FELConfig = field(default_factory=FELConfig)
     clustering: ClusteringConfig = field(default_factory=ClusteringConfig)

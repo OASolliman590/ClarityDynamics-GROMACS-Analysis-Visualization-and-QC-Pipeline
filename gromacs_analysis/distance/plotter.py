@@ -14,6 +14,7 @@ import plotly.io as pio
 
 from .config import DistanceConfig
 from ..utils.mpl_fallback import init_matplotlib
+from ..utils.figure_export import write_static
 
 logger = logging.getLogger(__name__)
 
@@ -112,9 +113,7 @@ class DistancePlotter:
                 if fmt == "html":
                     fig.write_html(str(file_path))
                 elif fmt in ("svg", "png"):
-                    fig.write_image(str(file_path), format=fmt,
-                                    width=self.config.plot_config.width * self.config.plot_config.scale,
-                                    height=self.config.plot_config.height * self.config.plot_config.scale)
+                    write_static(fig, file_path, fmt, self.config.plot_config.width, self.config.plot_config.height, self.config.plot_config.scale)
                 logger.info(f"Saved {fmt} plot: {file_path}")
             except Exception as exc:
                 if fmt == "svg" and fallback:
@@ -374,11 +373,8 @@ class DistanceComparisonPlotter:
                 if fmt == "html":
                     fig.write_html(str(file_path))
                 elif fmt in ("svg", "png"):
-                    fig.write_image(
-                        str(file_path),
-                        format=fmt,
-                        width=self.plot_config.width * self.plot_config.scale,
-                        height=self.plot_config.height * self.plot_config.scale,
+                    write_static(
+                        fig, file_path, fmt, self.plot_config.width, self.plot_config.height, self.plot_config.scale
                     )
                 logger.info(f"Saved {fmt} plot: {file_path}")
             except Exception as exc:

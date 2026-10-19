@@ -9,7 +9,9 @@ from typing import Any, Dict, Optional, List
 import yaml
 
 from .config import PipelineConfig, PipelineStage
-from ..md.config import MDConfig, SystemConfig, AnalysisMetric, PlotConfig, StabilityConfig
+from ..utils.palette import categorical
+from .discovery import discover_systems, normalise_ligands
+from ..md.config import MDConfig, SystemConfig, AnalysisMetric, PlotConfig, StabilityConfig, RMSFTerminalConfig
 from ..mmpbsa.config import MMPBSAConfig, MMPBSASystemConfig
 from ..pca.config import PCAConfig, PCASystemConfig, PCACompareConfig, FELConfig, ClusteringConfig
 from ..distance.config import DistanceConfig, DistanceCompareConfig
@@ -25,18 +27,6 @@ from ..distance.yaml_loader import load_yaml_config as load_distance_yaml
 
 logger = logging.getLogger(__name__)
 
-_COMPARE_PALETTE = [
-    (31, 119, 180),
-    (255, 127, 14),
-    (44, 160, 44),
-    (214, 39, 40),
-    (148, 103, 189),
-    (140, 86, 75),
-    (227, 119, 194),
-    (127, 127, 127),
-    (188, 189, 34),
-    (23, 190, 207),
-]
 
 
 def _resolve_path(value: Optional[str], base_path: Path) -> Optional[Path]:
@@ -111,18 +101,18 @@ def _clone_system(system: SystemConfig) -> SystemConfig:
 
 
 def _assign_palette_if_needed(systems: List[SystemConfig], palette: Optional[List[tuple]] = None) -> None:
+    """Apply a user-supplied comparison palette to ligand systems without explicit colours.
+
+    Without a palette the plotters assign the shared validated palette, so nothing is set here.
+    """
+    if not palette:
+        return
     holo_systems = [s for s in systems if not s.is_apo]
     if len(holo_systems) <= 1:
         return
-
-    colors = [s.color for s in holo_systems]
-    default_holo = (175, 0, 0)
-    unique_colors = {c for c in colors if c is not None}
-
-    if len(unique_colors) == 1 and default_holo in unique_colors:
-        palette_colors = palette or _COMPARE_PALETTE
+    if all(s.color is None for s in holo_systems):
         for idx, sys in enumerate(holo_systems):
-            sys.color = palette_colors[idx % len(palette_colors)]
+            sys.color = tuple(palette[idx % len(palette)])
 
 
 def _default_output_dir(stage: str, output_root: Optional[Path], base_dir: Optional[Path]) -> Optional[Path]:
@@ -187,6 +177,7 @@ def _build_md_config(data: Dict[str, Any], base_path: Path, defaults: Dict[str, 
                     ylabel=m["ylabel"],
                     is_holo_only=m.get("is_holo_only", False),
                     data_format=m.get("data_format", "two_column"),
+                    ligand=m.get("ligand"),
                 )
             )
 
@@ -244,6 +235,8 @@ def _build_md_config(data: Dict[str, Any], base_path: Path, defaults: Dict[str, 
         time_scale=data.get("time_scale"),
         smoothing_window=data.get("smoothing_window", data.get("analysis", {}).get("smoothing_window", 1)),
         outlier_threshold=data.get("outlier_threshold", data.get("analysis", {}).get("outlier_threshold")),
+        ligands=data.get("ligands") or [],
+        rmsf_terminals=RMSFTerminalConfig(**(data.get("rmsf_terminals") or {})),
     )
 
 
@@ -405,7 +398,7 @@ def _build_pca_config(data: Dict[str, Any], base_path: Path, defaults: Dict[str,
         pairs=fel_data.get("pairs", ["12"]),
         contours=fel_data.get("contours", 7),
         step=fel_data.get("step", 2),
-        colorscale=fel_data.get("colorscale", "jet"),
+        colorscale=fel_data.get("colorscale", "Viridis"),
         overlay_projection=fel_data.get("overlay_projection", True),
         include_probability=fel_data.get("include_probability", False),
         include_entropy=fel_data.get("include_entropy", False),
@@ -436,6 +429,7 @@ def _build_pca_config(data: Dict[str, Any], base_path: Path, defaults: Dict[str,
         apo_base_dir=apo_base_dir,
         systems=systems,
         n_pcs=n_pcs,
+        color=data.get("color"),
         plot_config=plot_config,
         fel=fel_config,
         clustering=clustering_config,
@@ -890,7 +884,7 @@ def _build_pca_batch_configs(stage_data: Dict[str, Any], base_path: Path, defaul
     output_pattern = stage_data.get("output_subdir_pattern", "{name}")
     configs: List[PCAConfig] = []
 
-    for sys_data in systems_data:
+    for slot, sys_data in enumerate(systems_data):
         sys_name = sys_data.get("name")
         if not sys_name:
             raise ValueError("pca_batch systems entries require name")
@@ -918,6 +912,7 @@ def _build_pca_batch_configs(stage_data: Dict[str, Any], base_path: Path, defaul
             "apo_base_dir": sys_data.get("apo_base_dir"),
             "systems": sys_data.get("systems", []),
             "run_gromacs": run_gromacs_data,
+            "color": sys_data.get("color") or categorical(slot),
         }
 
         configs.append(_build_pca_config(batch_data, base_path, defaults))
@@ -1133,6 +1128,9 @@ def _build_prolif_config(data: Dict[str, Any], base_path: Path, defaults: Dict[s
         outputs=data.get("outputs", ["barcode", "lignetwork", "occupancy", "tanimoto"]),
         lignetwork_display_all=bool(data.get("lignetwork_display_all", True)),
         lignetwork_count_aware=bool(data.get("lignetwork_count_aware", True)),
+        lignetwork_kind=data.get("lignetwork_kind", "aggregate"),
+        lignetwork_threshold=float(data.get("lignetwork_threshold", 0.3)),
+        occupancy_top_n=int(data.get("occupancy_top_n", 25)),
         barcode_n_frame_ticks=int(barcode_cfg.get("n_frame_ticks", data.get("barcode_n_frame_ticks", 10))),
         barcode_residues_tick_location=barcode_cfg.get(
             "residues_tick_location",
@@ -1156,15 +1154,47 @@ def _build_prolif_config(data: Dict[str, Any], base_path: Path, defaults: Dict[s
     )
 
 
-def _build_prolif_batch_configs(stage_data: Dict[str, Any], base_path: Path, defaults: Dict[str, Any]) -> List[ProlifConfig]:
-    systems_data = stage_data.get("systems", [])
-    if not systems_data:
-        raise ValueError("prolif_batch requires systems list")
+def _batch_systems(stage_data: Dict[str, Any], base_path: Path, stage: str) -> List[Dict[str, Any]]:
+    """Explicit ``systems`` list, or systems found by ``auto_discover`` (one per ligand)."""
+    systems = list(stage_data.get("systems") or [])
+    auto = stage_data.get("auto_discover")
+    if auto:
+        root_value = auto.get("root") or stage_data.get("base_dir")
+        if not root_value:
+            raise ValueError(f"{stage}.auto_discover requires root (or stage base_dir)")
+        for key in ("pattern", "topology", "trajectory"):
+            if not auto.get(key):
+                raise ValueError(f"{stage}.auto_discover requires {key}")
+        known = {s.get("name") for s in systems}
+        enabled = stage_data.get("enabled", True)
+        try:
+            discovered = discover_systems(
+                _resolve_path(str(root_value), base_path),
+                auto["pattern"],
+                auto["topology"],
+                auto["trajectory"],
+                include=auto.get("include"),
+                exclude=auto.get("exclude"),
+            )
+        except ValueError as exc:
+            if enabled and not systems:
+                raise
+            if enabled:
+                logger.warning(f"{stage}: {exc}; using the explicit systems list only.")
+            discovered = []
+        # Explicit entries override discovered ones with the same name.
+        systems.extend(s for s in discovered if s["name"] not in known)
+    if not systems and stage_data.get("enabled", True):
+        raise ValueError(f"{stage} requires a systems list or auto_discover")
+    return systems
 
+
+def _build_prolif_batch_configs(stage_data: Dict[str, Any], base_path: Path, defaults: Dict[str, Any]) -> List[ProlifConfig]:
     raw_base_dir = stage_data.get("base_dir") or defaults.get("data_root")
     if not raw_base_dir:
         raise ValueError("prolif_batch requires base_dir (or paths.data_root)")
     base_dir = _resolve_path(raw_base_dir, base_path)
+    systems_data = _batch_systems({**stage_data, "base_dir": raw_base_dir}, base_path, "prolif_batch")
 
     output_dir = stage_data.get("output_dir") or _default_output_dir("prolif_batch", defaults.get("output_root"), base_dir)
     output_dir = _resolve_path(str(output_dir), base_path) if output_dir else None
@@ -1172,17 +1202,34 @@ def _build_prolif_batch_configs(stage_data: Dict[str, Any], base_path: Path, def
 
     configs: List[ProlifConfig] = []
     for sys_data in systems_data:
-        ligand_name = sys_data.get("ligand_name") or sys_data.get("name") or "Ligand"
-        batch_output = output_dir / output_pattern.format(name=ligand_name) if output_dir else None
-
-        cfg_data = {
-            **stage_data,
-            **sys_data,
-            "base_dir": str(sys_data.get("base_dir") or raw_base_dir),
-            "output_dir": str(batch_output) if batch_output else None,
-            "ligand_name": ligand_name,
-        }
-        configs.append(_build_prolif_config(cfg_data, base_path, defaults))
+        system_name = sys_data.get("ligand_name") or sys_data.get("name") or "Ligand"
+        sys_raw_base = str(sys_data.get("base_dir") or raw_base_dir)
+        ligands_spec = sys_data.get("ligands", stage_data.get("ligands"))
+        topology = sys_data.get("topology") or stage_data.get("topology")
+        topology_path = (
+            _resolve_stage_input_path(topology, base_path, _resolve_path(sys_raw_base, base_path), sys_raw_base)
+            if topology else None
+        )
+        ligands = normalise_ligands(
+            ligands_spec,
+            topology_path,
+            exclude=sys_data.get("ligand_exclude", stage_data.get("ligand_exclude", [])),
+        )
+        # One fingerprint run per ligand; a single ligand keeps the system name.
+        runs = ligands or [{"name": None, "selection": None}]
+        for lig in runs:
+            name = system_name if len(runs) == 1 or not lig["name"] else f"{system_name}_{lig['name']}"
+            batch_output = output_dir / output_pattern.format(name=name) if output_dir else None
+            cfg_data = {
+                **{k: v for k, v in stage_data.items() if k not in ("systems", "auto_discover", "ligands")},
+                **{k: v for k, v in sys_data.items() if k not in ("ligands", "directories")},
+                "base_dir": sys_raw_base,
+                "output_dir": str(batch_output) if batch_output else None,
+                "ligand_name": name,
+            }
+            if lig["selection"]:
+                cfg_data["ligand_selection"] = lig["selection"]
+            configs.append(_build_prolif_config(cfg_data, base_path, defaults))
 
     return configs
 
@@ -1199,7 +1246,7 @@ def _build_prolif_compare_config(
         if not prolif_batch_configs:
             raise ValueError("prolif_compare from_prolif_batch requires prolif_batch stage")
         systems = prolif_batch_configs
-    elif stage_data.get("systems"):
+    elif stage_data.get("systems") or stage_data.get("auto_discover"):
         systems = _build_prolif_batch_configs(stage_data, base_path, defaults)
     else:
         raise ValueError("prolif_compare requires from_prolif_batch or systems list")
@@ -1292,18 +1339,24 @@ def _build_ttclust_config(data: Dict[str, Any], base_path: Path, defaults: Dict[
         limit_matrix=data.get("limit_matrix"),
         extra_args=[str(v) for v in data.get("extra_args", [])],
         environment={str(k): str(v) for k, v in (data.get("environment", {}) or {}).items()},
+        plot_config=PlotConfig(
+            template=(data.get("plot_config") or {}).get("template", "plotly_white"),
+            width=(data.get("plot_config") or {}).get("width", 1200),
+            height=(data.get("plot_config") or {}).get("height", 600),
+            scale=(data.get("plot_config") or {}).get("scale", 2),
+            font_family=(data.get("plot_config") or {}).get("font_family", "Arial"),
+            font_size=(data.get("plot_config") or {}).get("font_size", 16),
+            save_formats=(data.get("plot_config") or {}).get("save_formats", ["html", "svg"]),
+        ),
     )
 
 
 def _build_ttclust_batch_configs(stage_data: Dict[str, Any], base_path: Path, defaults: Dict[str, Any]) -> List[TTClustConfig]:
-    systems_data = stage_data.get("systems", [])
-    if not systems_data:
-        raise ValueError("ttclust_batch requires systems list")
-
     raw_base_dir = stage_data.get("base_dir") or defaults.get("data_root")
     if not raw_base_dir:
         raise ValueError("ttclust_batch requires base_dir (or paths.data_root)")
     base_dir = _resolve_path(raw_base_dir, base_path)
+    systems_data = _batch_systems({**stage_data, "base_dir": raw_base_dir}, base_path, "ttclust_batch")
 
     output_dir = stage_data.get("output_dir") or _default_output_dir("ttclust_batch", defaults.get("output_root"), base_dir)
     output_dir = _resolve_path(str(output_dir), base_path) if output_dir else None
@@ -1317,8 +1370,8 @@ def _build_ttclust_batch_configs(stage_data: Dict[str, Any], base_path: Path, de
         batch_output = output_dir / output_pattern.format(name=sys_name) if output_dir else None
 
         cfg_data = {
-            **stage_data,
-            **sys_data,
+            **{k: v for k, v in stage_data.items() if k not in ("systems", "auto_discover")},
+            **{k: v for k, v in sys_data.items() if k != "directories"},
             "base_dir": str(sys_data.get("base_dir") or raw_base_dir),
             "output_dir": str(batch_output) if batch_output else None,
             "system_name": sys_data.get("system_name") or sys_name,
@@ -1602,6 +1655,8 @@ def _build_md_compare_config(
             time_scale=stage_data.get("time_scale", base_cfg.time_scale),
             smoothing_window=stage_data.get("smoothing_window", base_cfg.smoothing_window),
             outlier_threshold=stage_data.get("outlier_threshold", base_cfg.outlier_threshold),
+            ligands=stage_data.get("ligands", base_cfg.ligands),
+            rmsf_terminals=base_cfg.rmsf_terminals,
         )
 
     config = _build_md_config(stage_data, base_path, defaults)
@@ -2278,6 +2333,15 @@ md:
   # time_scale: 0.001       # optional explicit multiplier override
   smoothing_window: 1       # set >1 to apply centered rolling smoothing
   outlier_threshold: null   # optional |z| threshold to mask artefacts; null disables (recommended)
+  # Several ligands in ONE complex (e.g. inhibitor + cofactor): ligand RMSD and COM-COM
+  # become one metric/plot per ligand (files RMSD_<name>.dat, comcom_<name>.dat).
+  # ligands: ["INH", "NAD"]
+  rmsf_terminals:            # flexible termini drawn faded between two dashed boundary lines
+    enabled: true
+    mad_multiplier: 3.0
+    smoothing_window: 3
+    stable_run: 3
+    max_terminal_fraction: 0.25
   systems:
     - name: "LigandA"
       dir_pattern: "HOLO_LigandA_{}"
@@ -2373,7 +2437,7 @@ pca:
   #   pairs: ["12", "13", "23"]
   #   contours: 7
   #   step: 2
-  #   colorscale: "jet"
+  #   colorscale: "Viridis"
   #   overlay_projection: true
   #   include_probability: true
   #   include_entropy: false
@@ -2561,6 +2625,19 @@ prolif_batch:
   enabled: false
   base_dir: "./1-MD/analysis"
   output_dir: "./analysis_outputs/prolif_batch"
+  # Automatic per-ligand discovery: every directory matching the pattern is grouped by
+  # {ligand}; {rep} directories become replicates. Explicit systems below override matches.
+  auto_discover:
+    pattern: "HOLO_{ligand}_{rep}"
+    topology: "step3_input.psf"
+    trajectory: "step5_production_noPBC.xtc"
+    # include: ["LigandA", "LigandB"]
+    # exclude: ["LigandC"]
+  # ligands: auto              # detect every non-protein/solvent/ion residue -> one run per ligand
+  # ligand_exclude: ["NAD"]    # with ligands: auto
+  lignetwork_kind: "aggregate" # interactions present in >= lignetwork_threshold of frames
+  lignetwork_threshold: 0.3
+  occupancy_top_n: 25
   systems:
     - name: "LigandA"
       ligand_name: "LigandA"
@@ -2615,6 +2692,10 @@ ttclust_batch:
   enabled: false
   base_dir: "./1-MD/analysis"
   output_dir: "./analysis_outputs/ttclust_batch"
+  auto_discover:
+    pattern: "HOLO_{ligand}_{rep}"
+    topology: "step3_input.psf"
+    trajectory: "step5_production_noPBC.xtc"
   stride: 10
   logfile: "clustering.log"
   select_traj: "all"

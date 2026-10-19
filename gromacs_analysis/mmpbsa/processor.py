@@ -263,6 +263,8 @@ class MMPBSAProcessor:
         for file_path in files:
             data = self.parser.parse_results(file_path, file_format='auto')
             if data:
+                if not data.get('entropy'):
+                    data['entropy'] = self._entropy_from_sibling_dat(file_path)
                 parsed_data.append(data)
         
         if not parsed_data:
@@ -277,6 +279,19 @@ class MMPBSAProcessor:
             # Multiple replicates: average and calculate SD
             return self._process_replicate_results(parsed_data)
     
+    def _entropy_from_sibling_dat(self, results_file: Path) -> Dict:
+        """CSV exports carry no entropy; read IE/C2 from the FINAL_RESULTS DAT next to them."""
+        if results_file.suffix.lower() == '.dat':
+            return {}
+        candidates = sorted(results_file.parent.glob('FINAL_RESULTS*.dat'))
+        stem_match = [c for c in candidates if c.stem in results_file.stem or results_file.stem in c.stem]
+        for candidate in stem_match + [c for c in candidates if c not in stem_match]:
+            entropy = self.parser.extract_entropy_from_file(candidate)
+            if entropy:
+                logger.info(f"Entropy terms for {results_file.name} read from {candidate.name}")
+                return entropy
+        return {}
+
     def _process_replicate_results(self, parsed_data: List[Dict]) -> Dict:
         """
         Process multiple replicate results files.
@@ -339,6 +354,13 @@ class MMPBSAProcessor:
             for key, values in entropy.items()
             if values
         }
+        for key, summary in entropy_result.items():
+            sigmas = [d['entropy'][key].get('sigma') for d in parsed_data
+                      if key in d.get('entropy', {}) and d['entropy'][key].get('sigma') is not None]
+            if sigmas:
+                summary['sigma'] = float(np.mean(sigmas))
+                if key == 'interaction_entropy':
+                    summary['reliable'] = bool(max(sigmas) <= self.parser.IE_SIGMA_LIMIT)
         
         return {
             'delta_components': delta_result,
@@ -402,6 +424,8 @@ class MMPBSAProcessor:
                 'sem': entropy_data.get('std_err', 0.0),
                 'n': 1,
                 'uncertainty': 'frame_sd',
+                'sigma': entropy_data.get('sigma'),
+                'reliable': entropy_data.get('reliable'),
             }
         
         return {

@@ -257,16 +257,19 @@ proc calc_hbonds {} {
     $sel delete
 }
 
-proc calc_comcom {} {
+proc calc_comcom {{lig_selection ""} {outfile_name "comcom_.dat"}} {
     global protein_selection ligand_selection nf
-    if {[selection_count $ligand_selection] <= 0} {
-        puts "No ligand atoms found for '$ligand_selection'; skipping COM-COM"
+    if {$lig_selection eq ""} {
+        set lig_selection $ligand_selection
+    }
+    if {[selection_count $lig_selection] <= 0} {
+        puts "No ligand atoms found for '$lig_selection'; skipping COM-COM"
         return
     }
-    puts "Calculating protein-ligand COM-COM distance"
+    puts "Calculating protein-ligand COM-COM distance for: $lig_selection"
     set protein [atomselect top $protein_selection]
-    set ligand [atomselect top $ligand_selection]
-    set outfile [open [outpath "comcom_.dat"] w]
+    set ligand [atomselect top $lig_selection]
+    set outfile [open [outpath $outfile_name] w]
     for {set frame 0} {$frame < $nf} {incr frame} {
         $protein frame $frame
         $protein update
@@ -319,7 +322,7 @@ if {[selection_count $ligand_selection] > 0} {
     calc_rmsd $complex_selection "RMSD_complex_.dat"
     calc_comcom
 }
-
+__PER_LIGAND__
 puts "VMD metric generation complete. Output directory: $metric_output_dir"
 quit
 """
@@ -331,10 +334,41 @@ quit
         "__LIGAND_SELECTION__": _tcl_double_quote(ligand_selection),
         "__METRIC_OUTPUT_DIR__": _tcl_double_quote(metric_output_dir),
         "__MAX_FRAMES__": str(max_frames),
+        "__PER_LIGAND__": _per_ligand_tcl(task.get("ligands") or []),
     }
     for placeholder, value in replacements.items():
         template = template.replace(placeholder, value)
     return template
+
+
+def _per_ligand_tcl(ligands) -> str:
+    """Per-ligand RMSD/COM-COM blocks for complexes that contain several ligands.
+
+    Output names match the MD metric patterns (``RMSD_<name>.dat``, ``comcom_<name>.dat``).
+    The combined ``ligand_selection`` outputs above are kept for single-ligand workflows.
+    """
+    blocks = []
+    for lig in ligands:
+        if isinstance(lig, dict):
+            name = str(lig.get("name", "")).strip()
+            selection = lig.get("selection") or f"resname {name}"
+        else:
+            name = str(lig).strip()
+            selection = f"resname {name}"
+        if not name or not all(ch.isalnum() or ch in "-_" for ch in name):
+            raise ValueError(f"Invalid ligand name for VMD output files: {name!r}")
+        sel = _tcl_double_quote(selection)
+        blocks.append(
+            "\n".join(
+                [
+                    f'if {{[selection_count "{sel}"] > 0}} {{',
+                    f'    calc_rmsd "({sel}) and noh" "RMSD_{name}.dat"',
+                    f'    calc_comcom "{sel}" "comcom_{name}.dat"',
+                    "}",
+                ]
+            )
+        )
+    return "\n".join(blocks) + ("\n" if blocks else "")
 
 
 def _tcl_double_quote(value: object) -> str:

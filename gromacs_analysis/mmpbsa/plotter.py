@@ -15,6 +15,8 @@ from plotly.subplots import make_subplots
 
 from .config import MMPBSAConfig
 from ..utils.mpl_fallback import init_matplotlib
+from ..utils.figure_export import write_static
+from ..utils.palette import categorical
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +40,14 @@ class MMPBSAPlotter:
             config: MMPBSAConfig object
         """
         self.config = config
+        # Ligands keep the same palette slot in every MM/PBSA figure (config order).
+        self._slots = {system.name: idx for idx, system in enumerate(getattr(config, 'systems', []) or [])}
         logger.info("MMPBSAPlotter initialized")
+
+    def _system_color(self, system_name: str) -> str:
+        if system_name not in self._slots:
+            self._slots[system_name] = len(self._slots)
+        return categorical(self._slots[system_name])
     
     def create_component_plot(self, results_data: Dict, system_name: str) -> go.Figure:
         """
@@ -355,13 +364,8 @@ class MMPBSAPlotter:
         if not systems:
             raise ValueError("No binding energy data found for comparison")
 
-        palette = [
-            '#4C78A8', '#F58518', '#54A24B', '#E45756',
-            '#72B7B2', '#EECA3B', '#B279A2', '#FF9DA6',
-            '#9D755D', '#BAB0AC',
-        ]
 
-        colors = [palette[i % len(palette)] for i in range(len(systems))]
+        colors = [self._system_color(name) for name in systems]
 
         fig = go.Figure()
         fig.add_trace(go.Bar(
@@ -376,7 +380,7 @@ class MMPBSAPlotter:
             ),
             marker_color=colors,
             marker_line=dict(color='rgba(0, 0, 0, 0.15)', width=1),
-            hovertemplate='<b>%{x}</b><br>ΔG: %{y:.2f} kcal/mol<extra></extra>'
+            hovertemplate='<b>%{x}</b><br>%{y:.2f} kcal/mol<extra></extra>'
         ))
 
         fig.add_hline(
@@ -390,7 +394,7 @@ class MMPBSAPlotter:
                 font=dict(size=self.config.plot_config.font_size)
             ),
             xaxis=dict(title='Ligand/System', showgrid=False),
-            yaxis=dict(title='ΔG (kcal/mol)', gridcolor='rgba(0, 0, 0, 0.08)', zeroline=False),
+            yaxis=dict(title=f'Δ{binding_key} (kcal/mol)', gridcolor='rgba(0, 0, 0, 0.08)', zeroline=False),
             font=dict(
                 family=self.config.plot_config.font_family,
                 size=self.config.plot_config.font_size,
@@ -434,11 +438,6 @@ class MMPBSAPlotter:
         if not components:
             raise ValueError("No matching delta components found for comparison")
 
-        palette = [
-            '#4C78A8', '#F58518', '#54A24B', '#E45756',
-            '#72B7B2', '#EECA3B', '#B279A2', '#FF9DA6',
-            '#9D755D', '#BAB0AC',
-        ]
 
         cols = min(3, len(components))
         rows = int(np.ceil(len(components) / cols))
@@ -465,7 +464,7 @@ class MMPBSAPlotter:
                         x=[system_name],
                         y=[value],
                         name=system_name,
-                        marker_color=palette[sys_idx % len(palette)],
+                        marker_color=self._system_color(system_name),
                         error_y=dict(
                             type='data',
                             array=[error],
@@ -515,6 +514,174 @@ class MMPBSAPlotter:
         fig.update_xaxes(tickangle=30, automargin=True)
         fig.update_annotations(font_size=max(10, self.config.plot_config.font_size - 2))
 
+        return fig
+
+    # ==================== ENTROPY ====================
+
+    ENTROPY_LABELS = {
+        'interaction_entropy': 'IE',
+        'c2_entropy': 'C2',
+    }
+
+    def entropy_terms(self, results_data: Dict) -> List[Dict]:
+        """ΔTOTAL, −TΔS and ΔG = ΔTOTAL + (−TΔS) for every entropy method present.
+
+        Uncertainties combine in quadrature (independent estimates).
+        """
+        total_mean, total_err = self._binding_with_error(results_data)
+        if total_mean is None:
+            return []
+        rows = []
+        for key, label in self.ENTROPY_LABELS.items():
+            ent = (results_data.get('entropy') or {}).get(key)
+            if not ent or ent.get('mean') is None:
+                continue
+            ent_err = self._error_of(ent)
+            rows.append({
+                'method': label,
+                'key': key,
+                'total': total_mean,
+                'total_err': total_err,
+                'minus_tds': float(ent['mean']),
+                'minus_tds_err': ent_err,
+                'dg': total_mean + float(ent['mean']),
+                'dg_err': float(np.hypot(total_err, ent_err)),
+                'sigma': ent.get('sigma'),
+                'reliable': ent.get('reliable'),
+            })
+        return rows
+
+    @staticmethod
+    def _error_of(entry: Dict) -> float:
+        """SEM over replicates when available, otherwise the reported SD."""
+        if entry.get('uncertainty') == 'between_replicates' and entry.get('sem') is not None:
+            return float(entry['sem'])
+        return float(entry.get('std') or 0.0)
+
+    def _binding_with_error(self, results_data: Dict) -> Tuple[Optional[float], float]:
+        binding = results_data.get('binding_energy', {}) or {}
+        entry = binding.get('TOTAL')
+        if entry is None:
+            for key in ("ΔTOTAL", "ΔGTOTAL"):
+                entry = (results_data.get('delta_components') or {}).get(key)
+                if entry:
+                    break
+        if not entry:
+            return None, 0.0
+        return entry.get('mean'), self._error_of(entry)
+
+    def create_entropy_plot(self, results_data: Dict, system_name: str) -> Optional[go.Figure]:
+        """Bars for ΔTOTAL, −TΔS and the entropy-corrected ΔG per available method.
+
+        Entropy terms flagged unreliable (IE with σ(ΔE_int) > 3.6 kcal/mol) are hatched.
+        """
+        rows = self.entropy_terms(results_data)
+        if not rows:
+            return None
+
+        total_color, entropy_color, dg_color = categorical(0), categorical(1), categorical(2)
+        x = ['ΔTOTAL']
+        y = [rows[0]['total']]
+        err = [rows[0]['total_err']]
+        colors = [total_color]
+        patterns = ['']
+        hover = ['Effective binding energy (no entropy)']
+        for row in rows:
+            unreliable = row['reliable'] is False
+            sigma_txt = f"σ(ΔE_int) = {row['sigma']:.2f} kcal/mol" if row['sigma'] is not None else ''
+            x += [f"−TΔS ({row['method']})", f"ΔG ({row['method']})"]
+            y += [row['minus_tds'], row['dg']]
+            err += [row['minus_tds_err'], row['dg_err']]
+            colors += [entropy_color, dg_color]
+            patterns += ['/' if unreliable else '', '/' if unreliable else '']
+            note = ' · unreliable (σ > 3.6)' if unreliable else ''
+            hover += [f"Entropy penalty {sigma_txt}{note}", f"ΔTOTAL + (−TΔS) {note}"]
+
+        fig = go.Figure(go.Bar(
+            x=x, y=y,
+            error_y=dict(type='data', array=err, visible=any(e > 0 for e in err), thickness=1.5,
+                         color='rgba(0,0,0,0.45)'),
+            marker=dict(color=colors, pattern=dict(shape=patterns, fgcolor='white', size=8),
+                        line=dict(color='white', width=2)),
+            text=[f"{v:.2f}" for v in y], textposition='outside',
+            customdata=hover,
+            hovertemplate='<b>%{x}</b><br>%{y:.2f} kcal/mol<br>%{customdata}<extra></extra>',
+        ))
+        fig.add_hline(y=0, line=dict(color='rgba(0,0,0,0.3)', width=1))
+        notes = [
+            f"{r['method']}: σ(ΔE_int) = {r['sigma']:.2f} kcal/mol"
+            + (" — above 3.6, entropy estimate unreliable (hatched)" if r['reliable'] is False else "")
+            for r in rows if r['sigma'] is not None
+        ]
+        if notes:
+            fig.add_annotation(text="<br>".join(notes), xref='paper', yref='paper', x=0, y=1.02,
+                               xanchor='left', yanchor='bottom', showarrow=False, align='left',
+                               font=dict(size=max(10, self.config.plot_config.font_size - 6)))
+        fig.update_layout(
+            title=dict(text=f"Entropy-corrected binding free energy · {system_name}", y=0.97),
+            yaxis=dict(title='kcal/mol', zeroline=False, gridcolor='rgba(0,0,0,0.08)'),
+            xaxis=dict(showgrid=False),
+            showlegend=False,
+            font=dict(family=self.config.plot_config.font_family, size=self.config.plot_config.font_size),
+            template=self.config.plot_config.template,
+            margin=dict(t=140),
+            width=max(self.config.plot_config.width, 220 * len(x)),
+            height=self.config.plot_config.height,
+        )
+        return fig
+
+    def create_entropy_comparison(self, all_data: Dict) -> Optional[go.Figure]:
+        """ΔTOTAL vs entropy-corrected ΔG for every system, grouped by system."""
+        per_system = {}
+        for system_name, system_data in all_data.items():
+            results_data = system_data.get('results')
+            if results_data:
+                rows = self.entropy_terms(results_data)
+                if rows:
+                    per_system[system_name] = rows
+        if not per_system:
+            return None
+
+        systems = list(per_system)
+        methods = sorted({r['method'] for rows in per_system.values() for r in rows})
+        series = [('ΔTOTAL', None)] + [(f"ΔG (ΔTOTAL + −TΔS {m})", m) for m in methods]
+        fig = go.Figure()
+        for idx, (label, method) in enumerate(series):
+            ys, errs, patterns = [], [], []
+            for system in systems:
+                rows = per_system[system]
+                if method is None:
+                    ys.append(rows[0]['total']); errs.append(rows[0]['total_err']); patterns.append('')
+                    continue
+                row = next((r for r in rows if r['method'] == method), None)
+                ys.append(row['dg'] if row else None)
+                errs.append(row['dg_err'] if row else 0.0)
+                patterns.append('/' if row and row['reliable'] is False else '')
+            fig.add_trace(go.Bar(
+                name=label, x=systems, y=ys,
+                error_y=dict(type='data', array=errs, visible=any(e for e in errs), thickness=1.5,
+                             color='rgba(0,0,0,0.45)'),
+                marker=dict(color=categorical(idx), pattern=dict(shape=patterns, fgcolor='white', size=8),
+                            line=dict(color='white', width=2)),
+                hovertemplate='<b>%{x}</b><br>' + label + ': %{y:.2f} kcal/mol<extra></extra>',
+            ))
+        fig.add_hline(y=0, line=dict(color='rgba(0,0,0,0.3)', width=1))
+        fig.update_layout(
+            barmode='group', bargap=0.25,
+            title=dict(text=f"Binding energy with and without entropy · {self.config.protein_name}"),
+            yaxis=dict(title='kcal/mol', zeroline=False, gridcolor='rgba(0,0,0,0.08)'),
+            xaxis=dict(title='Ligand/System', showgrid=False),
+            legend=dict(orientation='h', x=0.5, xanchor='center', y=-0.2, yanchor='top'),
+            font=dict(family=self.config.plot_config.font_family, size=self.config.plot_config.font_size),
+            template=self.config.plot_config.template,
+            width=max(self.config.plot_config.width, 160 * len(systems) * len(series) // 2 + 300),
+            height=self.config.plot_config.height,
+        )
+        fig.add_annotation(
+            text="Hatched: interaction entropy with σ(ΔE_int) > 3.6 kcal/mol (unreliable).",
+            xref='paper', yref='paper', x=0, y=1.02, xanchor='left', yanchor='bottom', showarrow=False,
+            font=dict(size=max(10, self.config.plot_config.font_size - 6)),
+        )
         return fig
 
     def _extract_binding_value(self, results_data: Dict, binding_key: str) -> Tuple[Optional[float], float]:
@@ -582,14 +749,8 @@ class MMPBSAPlotter:
             try:
                 if fmt == 'html':
                     fig.write_html(str(file_path))
-                elif fmt == 'svg':
-                    fig.write_image(str(file_path), format='svg', 
-                                  width=self.config.plot_config.width * self.config.plot_config.scale,
-                                  height=self.config.plot_config.height * self.config.plot_config.scale)
-                elif fmt == 'png':
-                    fig.write_image(str(file_path), format='png',
-                                  width=self.config.plot_config.width * self.config.plot_config.scale,
-                                  height=self.config.plot_config.height * self.config.plot_config.scale)
+                elif fmt in ('svg', 'png', 'pdf'):
+                    write_static(fig, file_path, fmt, self.config.plot_config.width, self.config.plot_config.height, self.config.plot_config.scale)
                 
                 logger.info(f"Saved {fmt} plot: {file_path}")
             except Exception as e:

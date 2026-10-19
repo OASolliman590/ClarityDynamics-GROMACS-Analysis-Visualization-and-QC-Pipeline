@@ -8,6 +8,8 @@ from typing import Iterable, Optional
 
 import plotly.graph_objects as go
 
+from ..utils.figure_export import write_static
+
 logger = logging.getLogger(__name__)
 
 
@@ -67,11 +69,13 @@ class ProlifPlotter:
                         logger.warning(f"Cannot export HTML for {name}")
                 elif fmt in ("svg", "png"):
                     if hasattr(normalized_fig, "write_image"):
-                        normalized_fig.write_image(
-                            str(file_path),
-                            format=fmt,
-                            width=self.plot_config.width * self.plot_config.scale,
-                            height=self.plot_config.height * self.plot_config.scale,
+                        write_static(
+                            normalized_fig,
+                            file_path,
+                            fmt,
+                            self.plot_config.width,
+                            self.plot_config.height,
+                            self.plot_config.scale,
                         )
                     elif hasattr(normalized_fig, "savefig"):
                         normalized_fig.savefig(str(file_path), format=fmt, bbox_inches="tight")

@@ -121,6 +121,22 @@ class MMPBSAAnalyzer:
                 except Exception as e:
                     logger.error(f"  ✗ Error creating component plot for {system_name}: {e}")
             
+            # Entropy-corrected binding energy (only when IE/C2 entropy was computed)
+            if results_data and results_data.get('entropy'):
+                try:
+                    fig = self.plotter.create_entropy_plot(results_data, system_name)
+                    if fig is not None:
+                        self.plotter.save_plot(fig, plots_dir, f"entropy_{system_name}")
+                        plots_created.append(f"entropy_{system_name}")
+                        logger.info(f"  ✓ Created entropy plot for {system_name}")
+                except Exception as e:
+                    logger.error(f"  ✗ Error creating entropy plot for {system_name}: {e}")
+            elif results_data:
+                logger.info(
+                    f"  No interaction/C2 entropy found for {system_name} "
+                    "(enable entropy in mmpbsa.in or keep FINAL_RESULTS*.dat next to CSV results)."
+                )
+
             # Decomposition plot
             if decomp_data is not None and not decomp_data.empty and results_data:
                 try:
@@ -181,6 +197,32 @@ class MMPBSAAnalyzer:
                 logger.info("  ✓ Created binding energy comparison plot")
             except Exception as e:
                 logger.error(f"  ✗ Error creating binding energy comparison plot: {e}")
+
+        # Entropy comparison across systems
+        if self.config.compare_systems and len(all_data) > 1:
+            try:
+                fig = self.plotter.create_entropy_comparison(all_data)
+                if fig is not None:
+                    self.plotter.save_plot(fig, plots_dir, "entropy_compare")
+                    plots_created.append("entropy_compare")
+                    logger.info("  ✓ Created entropy comparison plot")
+            except Exception as e:
+                logger.error(f"  ✗ Error creating entropy comparison plot: {e}")
+
+        entropy_rows = []
+        for system_name, system_data in all_data.items():
+            results_data = system_data.get('results')
+            if results_data:
+                for row in self.plotter.entropy_terms(results_data):
+                    entropy_rows.append({'System': system_name, **{k: v for k, v in row.items() if k != 'key'}})
+        if entropy_rows:
+            entropy_file = self.config.output_dir / 'data' / 'entropy_summary.csv'
+            entropy_file.parent.mkdir(parents=True, exist_ok=True)
+            pd.DataFrame(entropy_rows).rename(columns={
+                'method': 'Method', 'total': 'dTOTAL', 'total_err': 'dTOTAL_err',
+                'minus_tds': 'minus_TdS', 'minus_tds_err': 'minus_TdS_err',
+                'dg': 'dG_bind', 'dg_err': 'dG_bind_err', 'sigma': 'sigma_Eint', 'reliable': 'Reliable',
+            }).to_csv(entropy_file, index=False)
 
         # Component-by-component comparison
         if self.config.compare_components and len(all_data) > 1:
