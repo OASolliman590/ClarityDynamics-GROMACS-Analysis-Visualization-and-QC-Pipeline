@@ -576,4 +576,5 @@ class MMPBSAProcessor:
             'sem': std / np.sqrt(n) if n > 1 else 0.0,
             'n': n,
             'uncertainty': 'between_replicates' if n > 1 else 'none',
+            'values': [float(v) for v in arr],
         }

@@ -27,6 +27,8 @@ class PipelineConfig:
     output_root: Optional[Path] = None
     run: List[str] = field(default_factory=list)
     stages: Dict[str, PipelineStage] = field(default_factory=dict)
+    # YAML file the configuration was loaded from (provenance in the run report).
+    source_path: Optional[Path] = None
 
     def ordered_stage_names(self) -> List[str]:
         """Return stage names in execution order."""

@@ -30,6 +30,8 @@ class RankingConfig:
     # Bootstrap resamples for rank probabilities (0 disables) and the random seed.
     n_bootstrap: int = 2000
     seed: int = 0
+    # Monte-Carlo permutations for pairwise tests when exact enumeration is too large.
+    n_permutations: int = 10000
 
     def __post_init__(self) -> None:
         self.output_dir = Path(self.output_dir)

@@ -338,7 +338,8 @@ class MMPBSAAnalyzer:
                             'Std': comp_data['std'],
                             'SEM': comp_data.get('sem'),
                             'Uncertainty': comp_data.get('uncertainty'),
-                            'N': comp_data['n']
+                            'N': comp_data['n'],
+                            'Replicate_Values': ";".join(f"{float(v):.6g}" for v in comp_data.get('values') or []) or None,
                         })
                     
                     # Add binding energy
@@ -349,7 +350,8 @@ class MMPBSAAnalyzer:
                             'Std': data['std'],
                             'SEM': data.get('sem'),
                             'Uncertainty': data.get('uncertainty'),
-                            'N': data['n']
+                            'N': data['n'],
+                            'Replicate_Values': ";".join(f"{float(v):.6g}" for v in data.get('values') or []) or None,
                         })
                     
                     # Add entropy
@@ -360,7 +362,8 @@ class MMPBSAAnalyzer:
                             'Std': data['std'],
                             'SEM': data.get('sem'),
                             'Uncertainty': data.get('uncertainty'),
-                            'N': data['n']
+                            'N': data['n'],
+                            'Replicate_Values': ";".join(f"{float(v):.6g}" for v in data.get('values') or []) or None,
                         })
 
                     if rows and qc_data:

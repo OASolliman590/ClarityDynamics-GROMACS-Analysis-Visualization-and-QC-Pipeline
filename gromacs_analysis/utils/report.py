@@ -23,6 +23,7 @@ KEY_TABLES = (
     "statistics_summary.csv",
     "ligand_ranking.csv",
     "rank_pairwise.csv",
+    "pairwise_tests.csv",
     "excluded_systems.csv",
     "entropy_summary.csv",
     "occupancy_summary.csv",
@@ -32,7 +33,7 @@ KEY_TABLES = (
     "distance_compare_summary.csv",
     "stats_summary.csv",
 )
-MAX_TABLES_PER_STAGE = 4
+MAX_TABLES_PER_STAGE = 5
 MAX_ROWS = 10
 REPORT_NAME = "report.html"
 
@@ -59,6 +60,8 @@ a { color:var(--link); }
 .table-wrap { overflow-x:auto; } table { border-collapse:collapse; font-size:13px; }
 th, td { border-bottom:1px solid var(--border); padding:4px 8px; text-align:left; white-space:nowrap; }
 .links { columns:2 280px; font-size:13px; } code { font-size:13px; }
+pre { white-space:pre-wrap; font-size:12px; } details { margin-top:12px; }
+#provenance th { color:var(--muted); font-weight:500; }
 """
 
 
@@ -131,6 +134,80 @@ def _qc_warnings(results: Dict[str, Any], dirs_by_stage: Dict[str, List[Path]]) 
     return warnings
 
 
+MAX_FLAG_ROWS = 40
+
+
+def _convergence_flags(dirs_by_stage: Dict[str, List[Path]]) -> List[Dict[str, str]]:
+    """Flagged rows from every stage's data/convergence.csv (MD metrics, joint PCA)."""
+    flagged: List[Dict[str, str]] = []
+    for stage, dirs in dirs_by_stage.items():
+        for base in dirs:
+            path = base / "data" / "convergence.csv"
+            if not path.exists():
+                continue
+            try:
+                frame = pd.read_csv(path, dtype={"Flags": str}).fillna("")
+            except Exception:  # noqa: BLE001
+                continue
+            for _, row in frame[frame["Flags"].astype(str).str.len() > 0].iterrows():
+                what = " / ".join(str(row[c]) for c in ("System", "Metric") if c in frame.columns)
+                detail = ", ".join(
+                    f"{c}={row[c]:.3g}" for c in ("N_eff", "Half_Z", "Cos_PC1", "Half_RMSIP")
+                    if c in frame.columns and isinstance(row[c], (int, float)) and row[c] == row[c]
+                )
+                flagged.append({"stage": stage, "what": what, "replicate": str(row.get("Replicate", "")),
+                                "flags": str(row["Flags"]), "detail": detail, "file": str(path)})
+    return flagged
+
+
+_FLAG_HELP = {
+    "low_neff": "fewer effective independent samples than the threshold: run longer or report wider uncertainty",
+    "drift": "first and second half of the production window disagree: the property is still drifting",
+    "too_short": "series too short to assess",
+    "pc1_diffusive": "PC1 projection looks like random diffusion (cosine content high): conformational sampling not converged",
+    "unstable_subspace": "dominant motions differ between first and second half of the frames",
+}
+
+
+def _convergence_html(flagged: List[Dict[str, str]], root: Path) -> str:
+    if not flagged:
+        return ""
+    kinds = sorted({f for row in flagged for f in row["flags"].split(";") if f})
+    legend = "".join(f"<li><code>{html.escape(k)}</code>: {html.escape(_FLAG_HELP.get(k, ''))}</li>" for k in kinds)
+    rows = "".join(
+        f"<tr><td>{html.escape(r['stage'])}</td><td>{html.escape(r['what'])}</td><td>{html.escape(r['replicate'])}</td>"
+        f"<td>{html.escape(r['flags'])}</td><td>{html.escape(r['detail'])}</td></tr>"
+        for r in flagged[:MAX_FLAG_ROWS]
+    )
+    more = f"<p>…and {len(flagged) - MAX_FLAG_ROWS} more.</p>" if len(flagged) > MAX_FLAG_ROWS else ""
+    files = sorted({r["file"] for r in flagged})
+    links = ", ".join(f"<a href='{html.escape(_rel(Path(f), root))}'>{html.escape(_rel(Path(f), root))}</a>"
+                      for f in files)
+    return (f"<section class='card warnings' id='sampling'><h2>Sampling checks ({len(flagged)} flagged)</h2>"
+            f"<ul>{legend}</ul><div class='table-wrap'><table><tr><th>Stage</th><th>System / metric</th>"
+            f"<th>Replicate</th><th>Flags</th><th>Values</th></tr>{rows}</table></div>{more}"
+            f"<p class='meta'>Full tables: {links}</p></section>")
+
+
+def _provenance_html(info: Dict[str, Any]) -> str:
+    items = [
+        ("Started", info.get("started")), ("Finished", info.get("finished")), ("Host", info.get("host")),
+        ("User", info.get("user")), ("Platform", info.get("platform")), ("Python", info.get("python")),
+        ("Command", info.get("command")), ("Configuration", info.get("config_path")),
+    ]
+    git = info.get("toolkit_git") or {}
+    if git:
+        items.append(("Toolkit commit", f"{git.get('commit')} (uncommitted changes: {git.get('dirty')})"))
+    rows = "".join(f"<tr><th>{html.escape(k)}</th><td>{html.escape(str(v))}</td></tr>" for k, v in items if v)
+    packages = "".join(f"<tr><th>{html.escape(k)}</th><td>{html.escape(v)}</td></tr>"
+                       for k, v in (info.get("packages") or {}).items())
+    config_text = info.get("config_text")
+    config_block = (f"<details><summary>Configuration that ran</summary><pre>{html.escape(config_text)}</pre></details>"
+                    if config_text else "")
+    return (f"<section class='card' id='provenance'><h2>Provenance</h2><div class='table-wrap'><table>{rows}</table>"
+            f"</div><h3>Software</h3><div class='table-wrap'><table>{packages}</table></div>{config_block}</section>")
+
+
 def _table_html(path: Path, root: Path) -> str:
     try:
         frame = pd.read_csv(path, nrows=MAX_ROWS)
@@ -141,7 +218,8 @@ def _table_html(path: Path, root: Path) -> str:
             f'<small>(first {min(len(frame), MAX_ROWS)} rows)</small></h3><div class="table-wrap">{table}</div>')
 
 
-def write_run_report(config: Any, results: Dict[str, Any], output_root: Optional[Path] = None) -> Path:
+def write_run_report(config: Any, results: Dict[str, Any], output_root: Optional[Path] = None,
+                     started: Optional[datetime] = None) -> Path:
     """Write ``report.html`` into ``output_root`` (or the common parent of stage outputs)."""
     stages = [s for s in config.enabled_stages()] if hasattr(config, "enabled_stages") else []
     dirs_by_stage = {s.name: _stage_output_dirs(s.config) for s in stages}
@@ -164,6 +242,8 @@ def write_run_report(config: Any, results: Dict[str, Any], output_root: Optional
     if warnings:
         items = "".join(f"<li>{html.escape(w)}</li>" for w in warnings)
         parts.append(f"<section class='card warnings'><h2>QC warnings ({len(warnings)})</h2><ul>{items}</ul></section>")
+
+    parts.append(_convergence_html(_convergence_flags(dirs_by_stage), root))
 
     if not stages:
         parts.append("<p>No stages were enabled.</p>")
@@ -204,6 +284,12 @@ def write_run_report(config: Any, results: Dict[str, Any], output_root: Optional
             parts.append(_table_html(table, root))
         parts.append("</section>")
 
+    try:
+        from .provenance import collect  # noqa: WPS433
+
+        parts.append(_provenance_html(collect(getattr(config, "source_path", None), started)))
+    except Exception as exc:  # noqa: BLE001 - provenance must never break the report
+        logger.debug(f"Provenance unavailable: {exc}")
     parts.append("</main></body></html>")
     path = root / REPORT_NAME
     path.write_text("\n".join(parts), encoding="utf-8")

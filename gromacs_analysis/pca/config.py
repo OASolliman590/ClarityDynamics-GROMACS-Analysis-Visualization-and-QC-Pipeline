@@ -3,7 +3,7 @@ Configuration classes for PCA analysis
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, List, Tuple
+from typing import Dict, Optional, List, Tuple
 from pathlib import Path
 
 from ..md.config import PlotConfig
@@ -213,6 +213,9 @@ class PCAJointConfig:
     stride: int = 1
     max_frames_per_system: Optional[int] = None
     fit_iterations: int = 2
+    # Sampling checks: maximum cosine content of PC1 per replicate and minimum RMSIP
+    # between the essential subspaces of each system's first and second half of frames.
+    convergence: Dict[str, float] = field(default_factory=dict)
     plot_config: PlotConfig = field(default_factory=lambda: PlotConfig(
         template="plotly_white",
         font_family="Arial",

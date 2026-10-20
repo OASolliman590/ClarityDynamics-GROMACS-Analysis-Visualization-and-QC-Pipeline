@@ -21,6 +21,8 @@ from typing import Dict, List, Mapping, Optional, Sequence
 
 import numpy as np
 
+from ..utils.convergence import half_split_rmsip
+
 logger = logging.getLogger(__name__)
 
 
@@ -39,6 +41,7 @@ class JointPCAResult:
     rmsip_to_joint: np.ndarray         # (S,)
     mean_structure: np.ndarray         # (N, 3)
     parameters: Dict = field(default_factory=dict)
+    half_rmsip: Dict[str, float] = field(default_factory=dict)  # system -> first/second-half RMSIP
 
 
 def kabsch_fit(mobile: np.ndarray, reference: np.ndarray) -> np.ndarray:
@@ -150,6 +153,7 @@ def joint_pca(
     own_bases = {name: _pca(flat[name], k_overlap)[1] for name in names}
     pairwise = np.array([[rmsip(own_bases[a], own_bases[b], k_overlap) for b in names] for a in names])
     to_joint = np.array([rmsip(own_bases[name], vectors, k_overlap) for name in names])
+    half = {name: half_split_rmsip(flat[name], k_overlap) for name in names}
 
     return JointPCAResult(
         system_names=names,
@@ -169,6 +173,7 @@ def joint_pca(
             "frames": {name: int(shape[0]) for name, shape in shapes.items()},
             "n_atoms": n_atoms,
         },
+        half_rmsip=half,
     )
 
 

@@ -26,6 +26,7 @@ class PCAJointAnalyzer:
     def __init__(self, config: PCAJointConfig):
         self.config = config
         self.colors = self._assign_colors()
+        self.segments: Dict[str, List[int]] = {}
 
     def _assign_colors(self) -> Dict[str, str]:
         colors: Dict[str, str] = {}
@@ -46,15 +47,24 @@ class PCAJointAnalyzer:
         return (self.config.base_dir / path).resolve()
 
     def load(self) -> Dict[str, np.ndarray]:
+        """Read every replicate separately so per-replicate checks know the segment boundaries."""
         coords = {}
         for system in self.config.systems:
-            coords[system.name] = load_coordinates(
-                self._resolve(system.topology),
-                [self._resolve(t) for t in system.trajectories],
-                selection=self.config.selection,
-                stride=self.config.stride,
-                max_frames=self.config.max_frames_per_system,
-            )
+            per_traj_max = None
+            if self.config.max_frames_per_system:
+                per_traj_max = max(2, int(self.config.max_frames_per_system) // len(system.trajectories))
+            blocks = [
+                load_coordinates(
+                    self._resolve(system.topology),
+                    [self._resolve(t)],
+                    selection=self.config.selection,
+                    stride=self.config.stride,
+                    max_frames=per_traj_max,
+                )
+                for t in system.trajectories
+            ]
+            self.segments[system.name] = [len(b) for b in blocks]
+            coords[system.name] = np.concatenate(blocks)
             logger.info("Joint PCA: %s -> %d frames x %d atoms", system.name, *coords[system.name].shape[:2])
         return coords
 
@@ -72,6 +82,7 @@ class PCAJointAnalyzer:
             fit_iterations=self.config.fit_iterations,
         )
         written = self._write_data(result, data_dir)
+        written.append(self._write_convergence(result, data_dir))
         figures = []
         figures += self._save(self._projection_figure(result), plots_dir, "joint_projection_12")
         figures += self._save(self._density_figure(result), plots_dir, "joint_density_12")
@@ -121,6 +132,43 @@ class PCAJointAnalyzer:
         paths.append(data_dir / "parameters.json")
         paths[-1].write_text(json.dumps(params, indent=2) + "\n")
         return paths
+
+    def _write_convergence(self, result: JointPCAResult, data_dir: Path) -> Path:
+        """Cosine content of PC1-3 per replicate segment and half-split RMSIP per system."""
+        from ..utils.convergence import DEFAULT_PCA_THRESHOLDS, projection_convergence  # noqa: WPS433
+
+        limits = {**DEFAULT_PCA_THRESHOLDS, **(self.config.convergence or {})}
+        rows = []
+        for name, proj in result.projections.items():
+            lengths = self.segments.get(name) or [len(proj)]
+            if sum(lengths) != len(proj):
+                lengths = [len(proj)]
+            half = result.half_rmsip.get(name, float("nan"))
+            start = 0
+            for index, length in enumerate(lengths, start=1):
+                segment = proj[start:start + length]
+                start += length
+                row = {"System": name, "Replicate": index, "Frames": int(length)}
+                row.update(projection_convergence(segment[:, :3]))
+                row["Half_RMSIP"] = half
+                flags = []
+                if np.isfinite(row["Cos_PC1"]) and row["Cos_PC1"] > limits["cosine_max"]:
+                    flags.append("pc1_diffusive")
+                if np.isfinite(half) and half < limits["half_rmsip_min"]:
+                    flags.append("unstable_subspace")
+                if length < 8:
+                    flags.append("too_short")
+                row["Flags"] = ";".join(flags)
+                rows.append(row)
+        path = data_dir / "convergence.csv"
+        frame = pd.DataFrame(rows, columns=["System", "Replicate", "Frames", "Cos_PC1", "Cos_PC2", "Cos_PC3",
+                                            "Half_RMSIP", "Flags"])
+        frame.to_csv(path, index=False, float_format="%.4g")
+        flagged = frame[frame["Flags"].astype(str).str.len() > 0]
+        if not flagged.empty:
+            logger.warning("Joint PCA sampling checks flagged %d of %d replicate(s) (see %s)",
+                           len(flagged), len(frame), path)
+        return path
 
     # ------------------------------------------------------------------ figures
 

@@ -111,6 +111,8 @@ class MDAnalyzer:
         if self.config.stability.enabled:
             self._write_equilibration(self.processor.equilibration_records)
 
+        convergence_file = self._write_convergence(all_data)
+
         # Step 5: Save statistics
         logger.info("\n[5/6] Saving statistics...")
         statistics_file = self._save_statistics_csv(all_data)
@@ -131,6 +133,7 @@ class MDAnalyzer:
             'plots_created': plots_created,
             'data_exports': data_exports,
             'statistics_file': statistics_file,
+            'convergence_file': convergence_file,
             'summary_file': summary_file,
             'n_systems': len(all_data),
             'n_metrics': sum(len(system_data) for system_data in all_data.values())
@@ -169,6 +172,35 @@ class MDAnalyzer:
                     record["start_index"],
                     f"{record['n_effective']:.0f}" if record.get("n_effective") else "n/a",
                 )
+        return path
+
+    def _write_convergence(self, all_data: Dict) -> Optional[Path]:
+        """Per system/metric/replicate sampling checks over the analysed (production) window."""
+        from ..utils.convergence import series_convergence  # noqa: WPS433
+
+        rows = []
+        for system_name, system_data in all_data.items():
+            for metric_name, metric_data in system_data.items():
+                if self.processor.is_profile_metric(metric_name):
+                    continue  # per-residue profiles are not time series
+                if metric_data.get('mode') == 'replicate':
+                    series = metric_data.get('replicates_raw') or metric_data.get('replicates') or []
+                else:
+                    series = [metric_data.get('values')] if metric_data.get('values') is not None else []
+                for index, values in enumerate(series, start=1):
+                    row = {'System': system_name, 'Metric': metric_name, 'Replicate': index}
+                    row.update(series_convergence(values, self.config.convergence))
+                    rows.append(row)
+        if not rows:
+            return None
+        frame = pd.DataFrame(rows)
+        path = self.config.output_dir / 'data' / 'convergence.csv'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        frame.to_csv(path, index=False, float_format='%.6g')
+        flagged = frame[frame['Flags'].astype(str).str.len() > 0]
+        if not flagged.empty:
+            logger.warning("  Sampling checks flagged %d of %d replicate series (see %s)",
+                           len(flagged), len(frame), path)
         return path
 
     def _save_statistics_csv(self, all_data: Dict) -> Optional[Path]:

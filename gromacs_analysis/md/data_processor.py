@@ -652,33 +652,12 @@ class MDDataProcessor:
             Dict with ``sem``, ``sem_method``, ``n_effective`` and
             ``statistical_inefficiency``.
         """
-        data = np.asarray(values, dtype=float)
-        data = data[np.isfinite(data)]
-        n = len(data)
-        if n < 2 * min_blocks:
-            return {}
+        from ..utils.convergence import block_average  # noqa: WPS433
 
-        variance = float(np.var(data, ddof=1))
-        naive_sem = np.sqrt(variance / n) if variance > 0 else 0.0
-        best = naive_sem
-        blocked = data
-        while len(blocked) >= 2 * min_blocks:
-            if len(blocked) % 2:
-                blocked = blocked[:-1]
-            blocked = 0.5 * (blocked[0::2] + blocked[1::2])
-            sem = float(np.sqrt(np.var(blocked, ddof=1) / len(blocked)))
-            best = max(best, sem)
-
-        if best <= 0 or variance <= 0:
-            return {'sem': 0.0, 'sem_method': 'block_average', 'n_effective': float(n),
-                    'statistical_inefficiency': 1.0}
-        n_eff = variance / (best ** 2)
-        return {
-            'sem': float(best),
-            'sem_method': 'block_average',
-            'n_effective': float(min(n, n_eff)),
-            'statistical_inefficiency': float(max(1.0, n / n_eff)),
-        }
+        result = block_average(values, min_blocks=min_blocks)
+        if result:
+            result['sem_method'] = 'block_average'
+        return result
 
     def _convert_time_axis(
         self,

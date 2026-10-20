@@ -52,3 +52,29 @@ def should_skip(output_dir: Path, signature: str) -> bool:
     if not cache:
         return False
     return cache.get("signature") == signature
+
+
+def _normalise(value):
+    """JSON-safe, order-stable form of a stage configuration."""
+    import dataclasses
+    from enum import Enum
+
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return {f.name: _normalise(getattr(value, f.name)) for f in dataclasses.fields(value)}
+    if isinstance(value, dict):
+        return {str(k): _normalise(v) for k, v in sorted(value.items(), key=lambda kv: str(kv[0]))}
+    if isinstance(value, (list, tuple)):
+        return [_normalise(v) for v in value]
+    if isinstance(value, (set, frozenset)):
+        return sorted(_normalise(v) for v in value)
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def config_fingerprint(config) -> str:
+    """Hash of a stage (or unit) configuration: any setting change invalidates the cache."""
+    payload = json.dumps(_normalise(config), sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()

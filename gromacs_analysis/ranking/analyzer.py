@@ -55,6 +55,9 @@ class RankingAnalyzer:
                     metrics.setdefault(lig, {})["mmpbsa_total"] = total_val
                     sem = self._select_total_sem(df)
                     uncertainty.setdefault(lig, {})["mmpbsa_total"] = {"mean": total_val, "sem": sem}
+                    reps = self._select_total_replicates(df)
+                    if len(reps) > 1:
+                        uncertainty[lig]["mmpbsa_total"]["replicates"] = reps
 
                 qc_sidecar = self._extract_qc_from_sidecar(
                     self.config.mmpbsa_data_dir / f"{lig}_qc.csv"
@@ -97,6 +100,7 @@ class RankingAnalyzer:
         ranking_df.to_csv(ranking_path, index=False)
 
         stats_path = self._compute_stats(data_dir)
+        tests_path = self._write_pairwise_tests(metrics, uncertainty, data_dir)
 
         return {
             "success": True,
@@ -104,6 +108,7 @@ class RankingAnalyzer:
             "ranking_file": str(ranking_path),
             "stats_file": str(stats_path) if stats_path else None,
             "pairwise_file": str(pairwise_path) if pairwise_path else None,
+            "tests_file": str(tests_path) if tests_path else None,
             "excluded_systems": sorted(excluded),
         }
 
@@ -202,6 +207,38 @@ class RankingAnalyzer:
             entry["sem"] = float(sem) if sem is not None and not pd.isna(sem) else 0.0
             out.setdefault(lig, {})[metric] = entry
         return out
+
+    def _write_pairwise_tests(self, metrics, uncertainty, data_dir: Path) -> Optional[Path]:
+        """Replicate-level pairwise tests for every metric shared by two or more ligands."""
+        from .stats import pairwise_tests  # noqa: WPS433
+
+        values: Dict[str, Dict[str, List[float]]] = {}
+        for lig, lig_metrics in metrics.items():
+            for metric in lig_metrics:
+                reps = uncertainty.get(lig, {}).get(metric, {}).get("replicates") or []
+                values.setdefault(metric, {})[lig] = list(reps)
+        values = {m: groups for m, groups in values.items() if len(groups) > 1}
+        if not values:
+            return None
+        table = pairwise_tests(values, directions=self.config.metric_directions,
+                               n_permutations=self.config.n_permutations, seed=self.config.seed)
+        path = data_dir / "pairwise_tests.csv"
+        table.to_csv(path, index=False)
+        return path
+
+    @staticmethod
+    def _select_total_replicates(df: pd.DataFrame) -> List[float]:
+        if "Replicate_Values" not in df.columns or "Component" not in df.columns:
+            return []
+        components = df["Component"].astype(str).str.strip()
+        for name in ("Binding_TOTAL", "ΔTOTAL", "ΔGTOTAL", "DELTA TOTAL", "TOTAL"):
+            match = df[components == name]
+            if not match.empty:
+                raw = match.iloc[0]["Replicate_Values"]
+                if isinstance(raw, str) and raw.strip():
+                    return [float(v) for v in raw.split(";") if v.strip()]
+                return []
+        return []
 
     @staticmethod
     def _select_total_sem(df: pd.DataFrame) -> float:

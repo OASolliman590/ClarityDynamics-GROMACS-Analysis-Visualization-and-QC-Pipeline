@@ -275,6 +275,8 @@ Examples:
     parser.add_argument("--skip", help="Comma-separated stages to skip")
     parser.add_argument("--dry-run", action="store_true", help="Validate and print summary only")
     parser.add_argument("--continue-on-error", action="store_true", help="Continue even if a stage fails")
+    parser.add_argument("--no-cache", action="store_true",
+                        help="Ignore stage caches (cache: true) and recompute everything")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
 
     args = parser.parse_args()
@@ -314,7 +316,7 @@ Examples:
         return
 
     try:
-        run_pipeline(pipeline_config, continue_on_error=args.continue_on_error)
+        run_pipeline(pipeline_config, continue_on_error=args.continue_on_error, use_cache=not args.no_cache)
     except Exception:
         sys.exit(1)
 

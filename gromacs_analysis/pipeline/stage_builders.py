@@ -386,5 +386,6 @@ def _build_pca_joint_config(stage_data: Dict[str, Any], base_path: Path, default
         stride=int(stage_data.get("stride", 1)),
         max_frames_per_system=stage_data.get("max_frames_per_system"),
         fit_iterations=int(stage_data.get("fit_iterations", 2)),
+        convergence={k: float(v) for k, v in (stage_data.get("convergence") or {}).items()},
         plot_config=plot_config,
     )

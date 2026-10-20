@@ -3,8 +3,9 @@ Pipeline runner for multi-stage analyses.
 """
 
 import logging
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from .config import PipelineConfig
 from ..md import MDAnalyzer
@@ -16,31 +17,84 @@ from ..ranking import RankingAnalyzer
 from ..prolif import ProlifAnalyzer, ProlifComparisonAnalyzer
 from ..ttclust import TTClustAnalyzer
 from ..qc import QCAnalyzer
-from .cache import compute_signature, should_skip, save_cache
+from .cache import compute_signature, config_fingerprint, should_skip, save_cache
 from .utils import run_utils_tasks
 from ..utils.report import write_run_report
 
 logger = logging.getLogger(__name__)
 
 
-def run_pipeline(config: PipelineConfig, continue_on_error: bool = False) -> Dict[str, Any]:
-    """Run enabled pipeline stages in order and return results."""
+BATCH_UNITS = {
+    "md_batch": ("md", MDAnalyzer),
+    "pca_batch": ("pca", PCAAnalyzer),
+    "distance_batch": ("distance", DistanceAnalyzer),
+    "interactions_batch": ("interactions", InteractionAnalyzer),
+    "prolif_batch": ("prolif", ProlifAnalyzer),
+    "ttclust_batch": ("ttclust", TTClustAnalyzer),
+}
+
+
+def _signature(stage_name: str, config: Any) -> (str, List[Path]):
+    """Input files (path, size, mtime) plus a fingerprint of the configuration itself."""
+    files = _collect_stage_files(stage_name, config)
+    return compute_signature(files, extra={"stage": stage_name, "config": config_fingerprint(config)}), files
+
+
+def _succeeded(result: Any) -> bool:
+    items = result if isinstance(result, list) else [result]
+    return not any(isinstance(r, dict) and r.get("success") is False for r in items)
+
+
+def _run_batch(name: str, configs: List[Any], use_cache: bool) -> List[Dict[str, Any]]:
+    """Run each unit of a batch stage; with caching, unchanged units are skipped individually."""
+    unit_stage, analyzer_cls = BATCH_UNITS[name]
+    out: List[Dict[str, Any]] = []
+    for idx, cfg in enumerate(configs):
+        output_dir = getattr(cfg, "output_dir", None)
+        signature = files = None
+        if use_cache and output_dir:
+            signature, files = _signature(unit_stage, cfg)
+            if should_skip(Path(output_dir), signature):
+                logger.info(f"  - {name} unit {idx + 1}/{len(configs)}: cache hit, skipped")
+                out.append({"success": True, "skipped": True, "output_dir": str(output_dir)})
+                continue
+        if output_dir:
+            Path(output_dir).mkdir(parents=True, exist_ok=True)
+        result = analyzer_cls(cfg).run_analysis()
+        out.append(result)
+        if signature is not None and _succeeded(result):
+            save_cache(Path(output_dir), signature, files)
+        logger.info(f"  ✓ Completed {name} unit {idx + 1}/{len(configs)}")
+    return out
+
+
+def run_pipeline(config: PipelineConfig, continue_on_error: bool = False,
+                 use_cache: bool = True) -> Dict[str, Any]:
+    """Run enabled pipeline stages in order and return results.
+
+    Stages with ``cache: true`` are skipped when neither their inputs nor their settings
+    changed; batch stages are cached per unit. ``use_cache=False`` forces a full run.
+    """
     results: Dict[str, Any] = {}
+    started = datetime.now()
 
     for stage in config.enabled_stages():
         name = stage.name
         logger.info(f"Starting stage: {name}")
 
         try:
-            if stage.cache_enabled and getattr(stage.config, "output_dir", None):
+            caching = use_cache and stage.cache_enabled
+            signature = files = None
+            if caching and getattr(stage.config, "output_dir", None):
                 output_dir = stage.config.output_dir
-                files = _collect_stage_files(name, stage.config)
-                signature = compute_signature(files, extra={"stage": name})
+                signature, files = _signature(name, stage.config)
                 if should_skip(output_dir, signature):
                     logger.info(f"Skipping stage '{name}' (cache hit)")
                     results[name] = {"success": True, "skipped": True}
                     continue
-            if name == "md":
+            if name in BATCH_UNITS:
+                results[name] = _run_batch(name, stage.config, caching)
+            elif name == "md":
                 stage.config.output_dir.mkdir(parents=True, exist_ok=True)
                 analyzer = MDAnalyzer(stage.config)
                 results[name] = analyzer.run_analysis()
@@ -52,14 +106,6 @@ def run_pipeline(config: PipelineConfig, continue_on_error: bool = False) -> Dic
                 stage.config.output_dir.mkdir(parents=True, exist_ok=True)
                 analyzer = MDAnalyzer(stage.config)
                 results[name] = analyzer.run_analysis()
-            elif name == "md_batch":
-                batch_results = []
-                for idx, md_config in enumerate(stage.config):
-                    md_config.output_dir.mkdir(parents=True, exist_ok=True)
-                    analyzer = MDAnalyzer(md_config)
-                    batch_results.append(analyzer.run_analysis())
-                    logger.info(f"  ✓ Completed batch {idx + 1}/{len(stage.config)}")
-                results[name] = batch_results
             elif name == "mmpbsa":
                 stage.config.output_dir.mkdir(parents=True, exist_ok=True)
                 analyzer = MMPBSAAnalyzer(stage.config)
@@ -69,15 +115,6 @@ def run_pipeline(config: PipelineConfig, continue_on_error: bool = False) -> Dic
                     stage.config.output_dir.mkdir(parents=True, exist_ok=True)
                 analyzer = PCAAnalyzer(stage.config)
                 results[name] = analyzer.run_analysis()
-            elif name == "pca_batch":
-                batch_results = []
-                for idx, pca_config in enumerate(stage.config):
-                    if pca_config.output_dir:
-                        pca_config.output_dir.mkdir(parents=True, exist_ok=True)
-                    analyzer = PCAAnalyzer(pca_config)
-                    batch_results.append(analyzer.run_analysis())
-                    logger.info(f"  ✓ Completed PCA batch {idx + 1}/{len(stage.config)}")
-                results[name] = batch_results
             elif name == "pca_compare":
                 stage.config.output_dir.mkdir(parents=True, exist_ok=True)
                 analyzer = PCAComparisonAnalyzer(stage.config)
@@ -89,14 +126,6 @@ def run_pipeline(config: PipelineConfig, continue_on_error: bool = False) -> Dic
                 stage.config.output_dir.mkdir(parents=True, exist_ok=True)
                 analyzer = DistanceAnalyzer(stage.config)
                 results[name] = analyzer.run_analysis()
-            elif name == "distance_batch":
-                batch_results = []
-                for idx, dist_config in enumerate(stage.config):
-                    dist_config.output_dir.mkdir(parents=True, exist_ok=True)
-                    analyzer = DistanceAnalyzer(dist_config)
-                    batch_results.append(analyzer.run_analysis())
-                    logger.info(f"  ✓ Completed distance batch {idx + 1}/{len(stage.config)}")
-                results[name] = batch_results
             elif name == "distance_compare":
                 stage.config.output_dir.mkdir(parents=True, exist_ok=True)
                 analyzer = DistanceComparisonAnalyzer(stage.config)
@@ -105,14 +134,6 @@ def run_pipeline(config: PipelineConfig, continue_on_error: bool = False) -> Dic
                 stage.config.output_dir.mkdir(parents=True, exist_ok=True)
                 analyzer = InteractionAnalyzer(stage.config)
                 results[name] = analyzer.run_analysis()
-            elif name == "interactions_batch":
-                batch_results = []
-                for idx, inter_cfg in enumerate(stage.config):
-                    inter_cfg.output_dir.mkdir(parents=True, exist_ok=True)
-                    analyzer = InteractionAnalyzer(inter_cfg)
-                    batch_results.append(analyzer.run_analysis())
-                    logger.info(f"  ✓ Completed interactions batch {idx + 1}/{len(stage.config)}")
-                results[name] = batch_results
             elif name == "interactions_compare":
                 stage.config.output_dir.mkdir(parents=True, exist_ok=True)
                 analyzer = InteractionComparisonAnalyzer(stage.config)
@@ -121,14 +142,6 @@ def run_pipeline(config: PipelineConfig, continue_on_error: bool = False) -> Dic
                 stage.config.output_dir.mkdir(parents=True, exist_ok=True)
                 analyzer = ProlifAnalyzer(stage.config)
                 results[name] = analyzer.run_analysis()
-            elif name == "prolif_batch":
-                batch_results = []
-                for idx, cfg in enumerate(stage.config):
-                    cfg.output_dir.mkdir(parents=True, exist_ok=True)
-                    analyzer = ProlifAnalyzer(cfg)
-                    batch_results.append(analyzer.run_analysis())
-                    logger.info(f"  ✓ Completed prolif batch {idx + 1}/{len(stage.config)}")
-                results[name] = batch_results
             elif name == "prolif_compare":
                 stage.config.output_dir.mkdir(parents=True, exist_ok=True)
                 analyzer = ProlifComparisonAnalyzer(stage.config)
@@ -137,14 +150,6 @@ def run_pipeline(config: PipelineConfig, continue_on_error: bool = False) -> Dic
                 stage.config.output_dir.mkdir(parents=True, exist_ok=True)
                 analyzer = TTClustAnalyzer(stage.config)
                 results[name] = analyzer.run_analysis()
-            elif name == "ttclust_batch":
-                batch_results = []
-                for idx, cfg in enumerate(stage.config):
-                    cfg.output_dir.mkdir(parents=True, exist_ok=True)
-                    analyzer = TTClustAnalyzer(cfg)
-                    batch_results.append(analyzer.run_analysis())
-                    logger.info(f"  ✓ Completed ttclust batch {idx + 1}/{len(stage.config)}")
-                results[name] = batch_results
             elif name == "ranking":
                 stage.config.output_dir.mkdir(parents=True, exist_ok=True)
                 analyzer = RankingAnalyzer(stage.config)
@@ -155,11 +160,8 @@ def run_pipeline(config: PipelineConfig, continue_on_error: bool = False) -> Dic
                 logger.warning(f"Unknown stage '{name}' - skipping")
                 continue
 
-            if stage.cache_enabled and getattr(stage.config, "output_dir", None):
-                output_dir = stage.config.output_dir
-                files = _collect_stage_files(name, stage.config)
-                signature = compute_signature(files, extra={"stage": name})
-                save_cache(output_dir, signature, files)
+            if signature is not None and _succeeded(results.get(name)):
+                save_cache(stage.config.output_dir, signature, files)
 
             logger.info(f"Finished stage: {name}")
 
@@ -167,19 +169,19 @@ def run_pipeline(config: PipelineConfig, continue_on_error: bool = False) -> Dic
             logger.error(f"Stage '{name}' failed: {exc}")
             results[name] = {"success": False, "error": str(exc)}
             if not continue_on_error:
-                _write_report(config, results)
+                _write_report(config, results, started)
                 raise
 
-    report = _write_report(config, results)
+    report = _write_report(config, results, started)
     if report is not None:
         results["_report"] = str(report)
     return results
 
 
-def _write_report(config: PipelineConfig, results: Dict[str, Any]):
+def _write_report(config: PipelineConfig, results: Dict[str, Any], started: Optional[datetime] = None):
     """Write the run report; a report failure never fails the pipeline."""
     try:
-        return write_run_report(config, results)
+        return write_run_report(config, results, started=started)
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"Could not write run report: {exc}")
         return None
@@ -263,6 +265,12 @@ def _collect_stage_files(stage_name: str, config: Any) -> List[Path]:
         for cfg in config:
             files.extend(_collect_stage_files("interactions", cfg))
 
+    elif stage_name == "pca_joint":
+        for system in config.systems:
+            base = Path(config.base_dir) if config.base_dir else None
+            for path in [system.topology, *system.trajectories]:
+                path = Path(path)
+                files.append(path if path.is_absolute() or base is None else base / path)
     elif stage_name == "ranking":
         if config.md_stats_file:
             files.append(Path(config.md_stats_file))

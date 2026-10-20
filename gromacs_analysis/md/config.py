@@ -193,6 +193,9 @@ class MDConfig:
     # |z| threshold for masking outliers; None/0 disables (default). Large excursions in
     # MD observables are usually real events, so only enable this to drop known artefacts.
     outlier_threshold: Optional[float] = None
+    # Sampling-sufficiency thresholds (utils.convergence): minimum effective samples per
+    # replicate and maximum |z| between the two halves of the production window.
+    convergence: Dict[str, float] = field(default_factory=dict)
     
     def __post_init__(self):
         """Convert paths to Path objects and set default metrics."""

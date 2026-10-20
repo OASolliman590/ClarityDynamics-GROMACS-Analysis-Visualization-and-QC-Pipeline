@@ -184,6 +184,7 @@ def _build_md_config(data: Dict[str, Any], base_path: Path, defaults: Dict[str, 
         ligands=data.get("ligands") or [],
         rmsf_terminals=RMSFTerminalConfig(**(data.get("rmsf_terminals") or {})),
         convert_units=bool(data.get("convert_units", True)),
+        convergence={k: float(v) for k, v in (data.get("convergence") or {}).items()},
     )
 
 
@@ -1057,6 +1058,7 @@ def _build_ranking_config(
         "exclude_systems": list(stage_data.get("exclude_systems") or []) + list(reference_systems or []),
         "n_bootstrap": int(stage_data.get("n_bootstrap", 2000)),
         "seed": int(stage_data.get("seed", 0)),
+        "n_permutations": int((stage_data.get("tests") or {}).get("n_permutations", 10000)),
     }
     if metric_directions is not None:
         kwargs["metric_directions"] = metric_directions
@@ -1341,6 +1343,7 @@ def load_pipeline_config(yaml_path: Path) -> PipelineConfig:
         output_root=output_root,
         run=data.get("run", []),
         stages={},
+        source_path=Path(yaml_path).resolve(),
     )
 
     defaults = {
