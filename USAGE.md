@@ -52,13 +52,20 @@ clarity-setup tui                         # reopen clarity_project.yaml, or ask 
 | `x` | Include or exclude the selected system or ligand. |
 | `s` | Save `clarity_project.yaml` and a validated `pipeline.yaml`. |
 | `r` | Run: locally, or in the background on the remote host (`nohup`, log in `<root>/clarity/pipeline.log`). |
-| `c` | Submit to HTCondor (remote connections only). |
+| `c` | Submit to HTCondor as one job (remote connections only). |
+| `d` | Submit as a parallel HTCondor workflow (see [Parallel runs](#parallel-runs-on-htcondor)). |
+| `p` | Prepare missing inputs (see [Preparing inputs](#preparing-missing-inputs)). |
+| `g` | Settings of the focused stage on the Stages tab (or pick a stage). |
+| `j` | Jobs tab: refresh the selected run's state and log. |
+| `f` | Fetch the selected run's results into `clarity_results/<run id>/`. |
+| `D` | Doctor: check the tools available where the data lives. |
 | `ctrl+r` | Rescan. Your names and choices are kept, new folders are added, and vanished ones are marked missing. |
 | `o` | Connect to a different location. |
 | `q` | Quit. |
 
 The **Stages** tab lists every stage with a checkbox. The **Preview** tab shows the
-exact YAML that will run.
+exact YAML that will run. The **Jobs** tab lists every run and preparation you started,
+with its state and the end of its log.
 
 ### Command line (scripts, notebooks, CI)
 
@@ -85,6 +92,117 @@ HTCondor submission writes three files to `<root>/clarity/`: `pipeline.yaml`,
 `run_clarity.sh` and `run_clarity.sub`. It relies on the pool's shared filesystem
 (`should_transfer_files = NO`) and needs `gromacs-pipeline` installed on the
 execute nodes.
+
+### Check the environment first
+
+```bash
+clarity-setup doctor /data/inhA --condorctl nmrbox.yaml --where dag --prepare trjconv,metrics,mmpbsa
+```
+
+`doctor` checks, in one round trip:
+
+- the connection and write access to the project folder;
+- Python (3.10 or newer) and `gromacs-pipeline`;
+- `gmx` (or `gmx_mpi`), `vmd` and `gmx_MMPBSA`;
+- `condor_submit`, `condor_q` and `condor_submit_dag`;
+- free disk space;
+- whether the project folder is on a shared filesystem (NFS, Lustre, GPFS...), which
+  HTCondor execute nodes need.
+
+Each failed check prints a remedy. A check is *required* only for what you plan to do
+(`--where`, `--prepare`). The exit code is 4 when a required check fails, otherwise 0.
+
+### Preparing missing inputs
+
+The scan records, for each replicate, the `.tpr`, `.top`, raw trajectory and processed
+trajectory. `prepare` writes one reviewed script per replicate under
+`<root>/clarity/prep/`. It only covers inputs that are missing, unless you pass `--force`:
+
+| Task | What it does | Needs |
+|---|---|---|
+| `trjconv` | `gmx trjconv -pbc mol -center` and then `-fit rot+trans` produce `<raw>_noPBC.xtc`. Groups are passed by name (`Protein`, `System`, `Backbone`). | `.tpr` and a raw trajectory |
+| `metrics` | The VMD metrics helper writes `RMSD_*.dat`, `RMSF_.dat`, `rog_.dat`, `SASA_.dat`, `hbonds_*.dat` and `comcom_*.dat` next to the trajectory. Multi-ligand complexes get per-ligand files. | a psf/pdb/gro structure and a trajectory |
+| `mmpbsa` | `gmx select` builds an index with exactly two groups (0 = Protein, 1 = ligand), so `-cg 0 1` is always right. A default `clarity_mmpbsa.in` (GB, igb=5, 0.15 M salt, interaction entropy) is written, then `gmx_MMPBSA` runs. The ligand is the system's first included ligand. | `.tpr`, `.top` and a trajectory; holo systems only |
+
+```bash
+clarity-setup prepare --dry-run                    # list tasks and show the scripts; nothing is written
+clarity-setup prepare --where condor --cpus 4      # one HTCondor job per replicate script
+clarity-setup prepare --what metrics --where host  # only the VMD metrics, in the background on the host
+clarity-setup prepare --gmx gmx_mpi --mpi-ranks 8  # site-specific executables
+```
+
+A replicate that lacks a prerequisite is listed with the reason (for example "no .tpr
+run input in the replicate folder"); it is never skipped silently. When the jobs
+finish, rescan with `init` or `ctrl+r`. The new inputs appear, and the stages that need
+them become available.
+
+### Analysis settings
+
+Every stage has a few documented settings: strides, cutoffs, the PCA selection and
+component count, the TTClust method, bootstrap and permutation counts, the MM/PBSA start
+frame and the convergence thresholds. Defaults match the values the pipeline uses when
+nothing is set. Only your changes are stored, in `clarity_project.yaml`.
+
+```bash
+clarity-setup settings                                   # list all settings, * = changed
+clarity-setup settings --stage pca_joint
+clarity-setup settings --set prolif_batch.stride=5 --set pca_joint.selection="name CA and resid 1-250"
+clarity-setup init --set ranking.n_bootstrap=5000        # change while regenerating
+clarity-setup settings --set qc.max_frames=none          # optional settings accept "none" (no limit)
+```
+
+Values are type-checked and range-checked, and invalid values are rejected with the
+reason. In the interface, press `g` on a stage.
+
+### Parallel runs on HTCondor
+
+```bash
+clarity-setup run --where dag --cpus 8 --unit-cpus 2 --memory 16GB
+```
+
+This submits a DAGMan workflow from `<root>/clarity/dag/`:
+
+- **Parallel jobs**:
+  - one per ProLIF ligand run, distance entry and TTClust system;
+  - one each for QC, MD metrics, MM/PBSA and joint PCA.
+- **A final job**: runs the whole configuration. Generated stages use `cache: true` and
+  batch stages are cached per unit, so the final job skips everything the parallel jobs
+  produced. It then builds what needs all of them (ProLIF comparison, ranking, report).
+- **Failed units**: a unit that failed has no cache entry, so the final job re-runs it and
+  reports it.
+
+The wall time is roughly that of the slowest unit plus the final job, instead of the sum of
+all units. Each generated ProLIF entry is one ligand (`<system>_<ligand>`). The output folders
+are the same as before.
+
+### Following runs and getting results
+
+Every run and preparation you start is recorded in `clarity_project.yaml`:
+
+```bash
+clarity-setup status                 # latest run: state, job counts, last log lines
+clarity-setup status --all --lines 5
+clarity-setup fetch --to results/    # one archive of the output folder, downloaded and unpacked
+```
+
+How `status` determines the state:
+
+- **Host runs**: the exit code written by the wrapper, or the process if it is still
+  running.
+- **HTCondor jobs and DAGs**: `condor_q` while jobs are queued, then `condor_history`.
+  States are idle, running, held, completed, failed (non-zero exit) and removed.
+
+`fetch` refuses unfinished runs unless you pass `--force`. The report opens from
+`results/<run id>/report.html`.
+
+### Caching
+
+Generated configurations set `cache: true` on every stage. A stage is skipped only when both
+its inputs (path, size, modification time) and its settings (a fingerprint of the full stage
+configuration) are unchanged. Batch stages are cached per system or ligand, so changing one
+system re-runs only that system. Failed results are never cached. Force a full run with
+`gromacs-pipeline --config pipeline.yaml --no-cache`. Hand-written YAML keeps caching off
+unless it sets `cache: true`.
 
 ## 1) Setup
 
@@ -283,8 +401,38 @@ Recommended inputs:
   `hbonds_lig_<name>.dat` per listed ligand. The MD stage plots them as `hbonds_lig`.
 - **Multi-chain distances**: give residues as `"A:45"`. A bare number found in several chains
   is reported once per chain, with a warning.
-- **Run report**: every pipeline run writes `<output_root>/report.html`. It shows QC warnings
-  first, then each stage with its status, figures and key tables.
+- **Run report**: every pipeline run writes `<output_root>/report.html`. It shows these
+  sections:
+  - QC warnings;
+  - sampling-check flags;
+  - each stage with its status, figures and key tables;
+  - a **Provenance** section: package versions, Python, host, the toolkit's git commit and
+    whether it has uncommitted changes, and the exact configuration that ran.
+- **Sampling checks**: the MD stage writes `data/convergence.csv` per system, metric and
+  replicate over the analysed window. Flags:
+  - `low_neff`: the block-averaged effective sample count is below `convergence.neff_min`
+    (default 20);
+  - `drift`: the first and second halves differ by more than `convergence.half_z_max`
+    (default 3) combined standard errors.
+
+  Joint PCA writes `data/convergence.csv` with these per-replicate checks:
+  - the Hess cosine content of PC1–3 (flag `pc1_diffusive` above 0.5, meaning motion that
+    looks like random diffusion);
+  - the RMSIP between the first and second half of each system's frames (flag
+    `unstable_subspace` below 0.5).
+
+  Flagged rows are listed at the top of the report with an explanation of each flag.
+- **Pairwise ligand tests**: `ranking` writes `data/pairwise_tests.csv`. It covers every
+  scored metric, including MM/PBSA ΔTOTAL when per-replicate values exist. Every pair of
+  ligands is compared on replicate means, with:
+  - Welch's t-test;
+  - an exact permutation test (Monte-Carlo above 20 000 relabellings);
+  - Hedges' g;
+  - Holm and Benjamini–Hochberg adjusted p-values within each metric.
+
+  With 3 vs 3 replicates the smallest attainable permutation p is 0.1. The `Note` column
+  says so, so a non-significant result is not misread as "no difference". Ligands with fewer
+  than two replicates are listed as "insufficient replicates".
 - **Static images**: if Kaleido cannot find a browser, the pipeline logs one warning with the
   fix (`plotly_get_chrome` or `BROWSER_PATH`). It keeps writing interactive HTML and falls back
   to matplotlib for SVG where it can.

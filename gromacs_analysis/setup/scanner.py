@@ -51,6 +51,8 @@ class Replicate:
     trajectories: List[str]       # relative paths, preferred first
     metric_dir: Optional[str] = None
     inputs: Dict[str, bool] = field(default_factory=dict)
+    # Files needed to prepare missing inputs: tpr, top, raw_trajectory, processed_trajectory.
+    files: Dict[str, Optional[str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -143,7 +145,7 @@ def looks_apo(key: str) -> bool:
     return any(token in APO_TOKENS for token in tokens) or any(t in key.lower() for t in ("noligand", "ligandfree"))
 
 
-def _trajectory_rank(info: FileInfo) -> Tuple[int, int, int]:
+def _trajectory_rank(info: FileInfo) -> Tuple[Tuple[int, int, int], int]:
     name = info.name.lower()
     calpha = "calpha" in name or "_ca." in name or name.startswith("ca_")
     processed = any(t in name for t in ("nopbc", "nojump", "center", "fit", "whole"))
@@ -155,6 +157,31 @@ def _choose_trajectories(files: List[FileInfo]) -> List[str]:
     trajs = [f for f in files if f.name.lower().endswith(TRAJECTORY_EXT)]
     trajs.sort(key=lambda f: (_trajectory_rank(f)[0], _trajectory_rank(f)[1], f.name))
     return [f.path for f in trajs]
+
+
+PROCESSED_TOKENS = ("nopbc", "nojump", "center", "fit", "whole")
+
+
+def _is_processed(name: str) -> bool:
+    return any(t in name.lower() for t in PROCESSED_TOKENS)
+
+
+def _prep_files(items: List[FileInfo]) -> Dict[str, Optional[str]]:
+    """The .tpr/.top and raw/processed trajectories that input preparation needs."""
+    def pick(candidates: List[FileInfo]) -> Optional[str]:
+        if not candidates:
+            return None
+        ranked = sorted(candidates, key=lambda f: (0 if ("prod" in f.name.lower() or "md" in f.name.lower()) else 1,
+                                                   -f.size, f.name))
+        return ranked[0].path
+
+    trajs = [f for f in items if f.name.lower().endswith(TRAJECTORY_EXT) and _trajectory_rank(f)[0][0] == 0]
+    return {
+        "tpr": pick([f for f in items if f.name.lower().endswith(".tpr")]),
+        "top": pick([f for f in items if f.name.lower().endswith(".top")]),
+        "raw_trajectory": pick([f for f in trajs if not _is_processed(f.name)]),
+        "processed_trajectory": pick([f for f in trajs if _is_processed(f.name)]),
+    }
 
 
 def _choose_topology(paths: List[str]) -> Optional[str]:
@@ -227,7 +254,7 @@ def scan(backend: Backend, root: str, depth: int = 4) -> ScanResult:
             number=number,
             topology=_rel(_choose_topology(topo_paths), root),
             text_topology=_rel(pick_text_topology(topo_paths), root),
-            trajectories=[_rel(p, root) for p in _choose_trajectories(items)],
+            trajectories=[posixpath.relpath(p, root) for p in _choose_trajectories(items)],
             metric_dir=_rel(metric_dir, root),
             inputs={
                 "md_metrics": metric_dir is not None,
@@ -237,6 +264,8 @@ def scan(backend: Backend, root: str, depth: int = 4) -> ScanResult:
                     t in i.name.lower() for i in items for t in ("nopbc", "nojump")
                 ),
             },
+            files={**{k: _rel(v, root) for k, v in _prep_files(items).items()},
+                   "structure": _rel(pick_text_topology(topo_paths), root)},
         )
         grouped.setdefault(key, []).append(replicate)
 

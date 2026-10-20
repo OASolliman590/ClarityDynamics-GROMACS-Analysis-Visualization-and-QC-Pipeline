@@ -10,7 +10,7 @@ import datetime as _dt
 import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import yaml
 
@@ -50,6 +50,7 @@ class Replicate:
     trajectories: List[str]
     metric_dir: Optional[str] = None
     inputs: Dict[str, bool] = field(default_factory=dict)
+    files: Dict[str, Optional[str]] = field(default_factory=dict)
 
     @property
     def trajectory(self) -> Optional[str]:
@@ -116,6 +117,8 @@ class Project:
     stages: Dict[str, StageChoice] = field(default_factory=dict)
     scanned_at: Optional[str] = None
     version: int = PROJECT_VERSION
+    settings: Dict[str, Dict[str, Any]] = field(default_factory=dict)   # stage -> {key: override}
+    runs: List[Dict[str, Any]] = field(default_factory=list)            # run records (setup.jobs)
 
     # ------------------------------------------------------------ construction
 
@@ -260,6 +263,8 @@ class Project:
             stages={k: StageChoice(**v) for k, v in (data.get("stages") or {}).items()},
             scanned_at=data.get("scanned_at"),
             version=int(data.get("version", PROJECT_VERSION)),
+            settings={k: dict(v or {}) for k, v in (data.get("settings") or {}).items()},
+            runs=list(data.get("runs") or []),
         )
 
     def save(self, path: Path) -> Path:
@@ -283,7 +288,7 @@ class Project:
 def _replicate(rep) -> Replicate:
     return Replicate(
         dir=rep.dir, number=rep.number, topology=rep.topology, trajectories=list(rep.trajectories),
-        metric_dir=rep.metric_dir, inputs=dict(rep.inputs),
+        metric_dir=rep.metric_dir, inputs=dict(rep.inputs), files=dict(getattr(rep, "files", {}) or {}),
     )
 
 

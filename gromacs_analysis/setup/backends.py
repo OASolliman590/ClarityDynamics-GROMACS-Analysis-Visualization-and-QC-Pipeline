@@ -61,6 +61,17 @@ class Backend:
     def exists(self, path: str) -> bool:
         return self.run(f"test -e {shlex.quote(path)}").ok
 
+    def download(self, remote_path: str, local_path: str) -> None:
+        """Copy one (possibly binary) file to this machine; base64 over ``run`` by default."""
+        import base64  # noqa: WPS433
+
+        result = self.run(f"base64 < {shlex.quote(remote_path)}", timeout=3600)
+        if not result.ok:
+            raise BackendError(f"Cannot download {remote_path} from {self.label}: {result.stderr.strip()}")
+        target = Path(local_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(base64.b64decode("".join(result.stdout.split())))
+
     def close(self) -> None:
         """Release the connection (no-op for local)."""
 
@@ -92,6 +103,12 @@ class LocalBackend(Backend):
     def exists(self, path: str) -> bool:
         return Path(path).exists()
 
+    def download(self, remote_path: str, local_path: str) -> None:
+        import shutil  # noqa: WPS433
+
+        Path(local_path).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(remote_path, local_path)
+
 
 class ShellRunner(LocalBackend):
     """Local commands, but treated as remote: every file access goes through ``run``.
@@ -114,6 +131,9 @@ class ShellRunner(LocalBackend):
 
     def exists(self, path: str) -> bool:
         return Backend.exists(self, path)
+
+    def download(self, remote_path: str, local_path: str) -> None:
+        Backend.download(self, remote_path, local_path)
 
 
 class SSHBackend(Backend):
@@ -208,6 +228,10 @@ class SSHBackend(Backend):
         with self._sftp_client().open(path, "w") as handle:
             handle.write(text)
 
+    def download(self, remote_path: str, local_path: str) -> None:
+        Path(local_path).parent.mkdir(parents=True, exist_ok=True)
+        self._sftp_client().get(remote_path, local_path)
+
     def close(self) -> None:
         if self._sftp is not None:
             self._sftp.close()
@@ -266,6 +290,10 @@ class CondorctlBackend(Backend):
             conn.run(f"mkdir -p {shlex.quote(directory)}")
         with conn.sftp.open(path, "w") as handle:
             handle.write(text)
+
+    def download(self, remote_path: str, local_path: str) -> None:
+        Path(local_path).parent.mkdir(parents=True, exist_ok=True)
+        self._ensure().sftp.get(remote_path, local_path)
 
     def close(self) -> None:
         if self._connected:

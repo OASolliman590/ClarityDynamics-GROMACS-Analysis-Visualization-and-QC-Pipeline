@@ -5,16 +5,21 @@ from pathlib import Path
 
 import pytest
 import yaml
+from setup_fixtures import build_project
 
 from gromacs_analysis.setup import cli, runner
 from gromacs_analysis.setup.backends import BackendError, CommandResult, LocalBackend, ShellRunner
 from gromacs_analysis.setup.generator import (
-    build_pipeline_dict, enabled_stages, refresh_stages, render_yaml, stage_availability, validate_yaml,
+    build_pipeline_dict,
+    enabled_stages,
+    refresh_stages,
+    render_yaml,
+    stage_availability,
+    validate_yaml,
     write_pipeline,
 )
 from gromacs_analysis.setup.project import Project, ProjectError, sanitize_name
 from gromacs_analysis.setup.scanner import scan
-from setup_fixtures import build_project
 
 
 @pytest.fixture
@@ -49,7 +54,7 @@ def test_excluded_system_frees_its_name(project: Project):
 
 def test_rename_ligand_everywhere_or_per_system(project: Project):
     assert project.rename_ligand("INH", "Isoniazid") == 1
-    lig = next(l for l in project.system("HOLO_LigA").ligands if l.resname == "INH")
+    lig = next(lg for lg in project.system("HOLO_LigA").ligands if lg.resname == "INH")
     assert lig.name == "Isoniazid" and lig.selection == "resname INH"
     project.rename_ligand("LGC", "Compound C", system="LigC")
     assert project.system("LigC").ligands[0].name == "Compound_C"
@@ -132,11 +137,14 @@ def test_generated_yaml_validates_with_names_and_selections(project: Project):
     assert "Isoniazid_cplx" in [s["name"] for s in data["pca_joint"]["systems"]]
     assert "Isoniazid_cplx" in [s["name"] for s in data["ttclust_batch"]["systems"]]
 
+    # One ProLIF entry per ligand run (independent work units), named <system>_<ligand>.
     prolif = {s["name"]: s for s in data["prolif_batch"]["systems"]}
     assert "APO" not in prolif
-    assert prolif["Isoniazid_cplx"]["ligands"] == [
-        {"name": "Isoniazid", "selection": "resname INH"}, {"name": "NAD", "selection": "resname NAD"}]
-    assert all(t.startswith(project.root) for t in prolif["Isoniazid_cplx"]["trajectories"])
+    assert prolif["Isoniazid_cplx_Isoniazid"]["ligands"] == [{"name": "Isoniazid", "selection": "resname INH"}]
+    assert prolif["Isoniazid_cplx_NAD"]["ligands"] == [{"name": "NAD", "selection": "resname NAD"}]
+    assert prolif["LigC"]["ligands"] == [{"name": "LGC", "selection": "resname LGC"}]
+    assert all(t.startswith(project.root) for t in prolif["Isoniazid_cplx_NAD"]["trajectories"])
+    assert all(data[stage]["cache"] is True for stage in data["run"])
 
     dist_names = [s["name"] for s in data["distance_batch"]["systems"]]
     assert "Isoniazid_cplx_Isoniazid" in dist_names and "Isoniazid_cplx_NAD" in dist_names
@@ -154,7 +162,7 @@ def test_excluded_systems_and_ligands_are_absent(project: Project):
     names = [s["name"] for s in data["prolif_batch"]["systems"]]
     assert "LigC" not in names
     liga = next(s for s in data["prolif_batch"]["systems"] if s["name"] == "LigA")
-    assert [l["selection"] for l in liga["ligands"]] == ["resname INH"]
+    assert [lg["selection"] for lg in liga["ligands"]] == ["resname INH"]
 
 
 def test_generation_refuses_invalid_project(project: Project, tmp_path: Path):
@@ -263,7 +271,7 @@ def test_cli_init_applies_edits_and_writes_valid_files(project: Project, tmp_pat
     assert data["run"] == ["qc", "md", "prolif_batch"]
     assert data["md"]["protein_name"] == "InhA"
     names = [s["name"] for s in data["prolif_batch"]["systems"]]
-    assert names == ["Isoniazid_cplx", "LigC"]
+    assert names == ["Isoniazid_cplx_Isoniazid", "Isoniazid_cplx_NAD", "LigC"]
     saved = Project.load(proj_file)
     assert saved.system("LigC").ligands[0].name == "CompoundC"
 
@@ -294,3 +302,14 @@ def test_cli_tui_without_textual_exits_3(monkeypatch, capsys):
     monkeypatch.setattr(builtins, "__import__", fake_import)
     assert cli.main(["tui"]) == 3
     assert "pip install" in capsys.readouterr().err
+
+
+def test_prolif_split_keeps_loader_output_folders(project: Project, tmp_path: Path):
+    """Per-ligand entries produce the same output folders the loader made for multi-ligand entries."""
+    from gromacs_analysis.pipeline.yaml_loader import load_pipeline_config
+
+    out = write_pipeline(project, tmp_path / "pipeline.yaml")
+    cfgs = load_pipeline_config(out).stages["prolif_batch"].config
+    folders = sorted(c.output_dir.name for c in cfgs)
+    assert folders == ["output_LigA_INH", "output_LigA_NAD", "output_LigB", "output_LigC"]
+    assert {c.ligand_selection for c in cfgs} == {"resname INH", "resname NAD", "resname LGB", "resname LGC"}

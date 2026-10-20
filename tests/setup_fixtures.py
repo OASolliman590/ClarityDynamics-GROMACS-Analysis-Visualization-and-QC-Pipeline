@@ -81,3 +81,28 @@ def build_project(root: Path) -> Path:
 
 def names(systems: Iterable) -> list:
     return [s.key for s in systems]
+
+
+def add_prep_files(root: Path) -> Path:
+    """GROMACS run inputs for HOLO_LigB (tpr + top, raw trajectory only) so preparation has work."""
+    for rep in (1, 2):
+        d = root / f"HOLO_LigB_rep{rep}"
+        write(d / "md.tpr", size=50)
+        write(d / "topol.top", "[ system ]\n")
+    write(root / "APO_1" / "prod.tpr", size=50)
+    return root
+
+
+def fake_bin(tmp: Path, scripts: dict, monkeypatch) -> Path:
+    """Executables (bash bodies) placed first on PATH, so generated commands really run."""
+    import os
+    import stat
+
+    bin_dir = tmp / "fakebin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    for name, body in scripts.items():
+        path = bin_dir / name
+        path.write_text("#!/bin/bash\n" + body + "\n")
+        path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    return bin_dir

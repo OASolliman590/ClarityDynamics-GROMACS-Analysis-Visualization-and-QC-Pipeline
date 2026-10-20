@@ -215,12 +215,23 @@ def _distance_block(project: Project) -> dict:
 
 
 def _prolif_block(project: Project) -> dict:
+    """One entry per ligand run, so each entry is one independent work unit.
+
+    Names match what the loader derives for a multi-ligand entry (``<system>_<ligand>``),
+    so output folders are the same as before the split.
+    """
+    systems = []
+    for s in _ligand_systems(project):
+        for lig in s["ligands"]:
+            name = s["name"] if len(s["ligands"]) == 1 else f"{s['name']}_{lig['name']}"
+            systems.append({"name": name, "topology": s["topology"], "trajectories": s["trajectories"],
+                            "ligands": [lig]})
     return {
         "enabled": True,
         "base_dir": project.root,
         "output_dir": _output(project, "prolif_batch"),
         "stride": 10,
-        "systems": _ligand_systems(project),
+        "systems": systems,
     }
 
 
@@ -266,8 +277,12 @@ def build_pipeline_dict(project: Project) -> dict:
         "ttclust_batch": lambda: _ttclust_block(project),
         "ranking": lambda: _ranking_block(project, stages),
     }
+    from .settings import apply_to_block  # noqa: WPS433
+
     for stage in stages:
-        data[stage] = builders[stage]()
+        block = builders[stage]()
+        block["cache"] = True  # unchanged inputs and settings are not recomputed (per unit in batches)
+        data[stage] = apply_to_block(block, project.settings.get(stage, {}))
     if "prolif_compare" in stages and "prolif_batch" not in stages:
         raise ValueError("prolif_compare needs prolif_batch")
     return data

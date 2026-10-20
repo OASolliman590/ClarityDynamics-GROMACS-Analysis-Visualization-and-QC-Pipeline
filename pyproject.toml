@@ -1,0 +1,96 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gromacs-analysis-toolkit"
+version = "1.1.0"
+description = "ClarityDynamics: GROMACS molecular-dynamics analysis, visualisation and QC pipeline"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+authors = [{ name = "ClarityDynamics contributors" }]
+requires-python = ">=3.9"
+keywords = ["gromacs", "molecular-dynamics", "visualization", "mmpbsa", "pca", "prolif", "htcondor"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Chemistry",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+    "numpy>=1.20.0",
+    "pandas>=1.3.0",
+    "plotly>=5.0.0",
+    "kaleido>=0.2.1",
+    "scipy>=1.7.0",
+    "pyyaml>=6.0",
+    "matplotlib>=3.4.0",
+]
+
+[project.optional-dependencies]
+trajectory = ["MDAnalysis>=2.0.0"]
+prolif = ["MDAnalysis>=2.0.0", "prolif>=2.0.0", "rdkit>=2022.9.1", "ipython"]
+tui = ["textual>=0.60", "paramiko>=3.4"]
+clustering = ["scikit-learn>=1.0.0"]
+analysis = ["seaborn>=0.11.0"]
+all = [
+    "MDAnalysis>=2.0.0", "prolif>=2.0.0", "rdkit>=2022.9.1", "ipython",
+    "scikit-learn>=1.0.0", "seaborn>=0.11.0", "textual>=0.60", "paramiko>=3.4",
+]
+dev = [
+    "pytest>=7", "pytest-cov>=4", "ruff>=0.5", "mypy>=1.8", "types-PyYAML", "types-paramiko",
+    "MDAnalysis>=2.0.0", "textual>=0.60", "paramiko>=3.4",
+]
+
+[project.urls]
+Homepage = "https://github.com/OASolliman590/ClarityDynamics-GROMACS-Analysis-Visualization-and-QC-Pipeline"
+
+[project.scripts]
+gromacs-md = "gromacs_analysis.cli.md_cli:main"
+gromacs-mmpbsa = "gromacs_analysis.cli.mmpbsa_cli:main"
+gromacs-pca = "gromacs_analysis.cli.pca_cli:main"
+gromacs-pipeline = "gromacs_analysis.cli.pipeline_cli:main"
+gromacs-orchestrate = "gromacs_analysis.cli.orchestrate_cli:main"
+clarity-setup = "gromacs_analysis.setup.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["gromacs_analysis*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["gromacs_analysis"]
+omit = ["gromacs_analysis/cli/orchestrate_cli.py"]
+
+[tool.coverage.report]
+skip_empty = true
+
+# Lint and type gates apply to the maintained modules added with Spec Kit features
+# (setup package, convergence/statistics/provenance helpers); older modules are
+# brought under them gradually.
+[tool.ruff]
+line-length = 120
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "I"]
+ignore = ["E501", "B008"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["gromacs_analysis"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+warn_unused_ignores = false
+check_untyped_defs = true
+follow_imports = "silent"
+files = ["gromacs_analysis/setup"]

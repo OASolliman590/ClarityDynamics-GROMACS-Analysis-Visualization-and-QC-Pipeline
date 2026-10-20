@@ -2,8 +2,9 @@
 
     clarity-setup scan ROOT [--ssh HOST | --condorctl CONFIG]
     clarity-setup init ROOT [--rename OLD=NEW] [--ligand RES=NAME] [--apo NAME] [--exclude NAME] ...
-    clarity-setup run  [--project clarity_project.yaml] [--where local|host|condor]
+    clarity-setup run  [--project clarity_project.yaml] [--where local|host|condor|dag]
     clarity-setup tui  [ROOT] [--ssh HOST | --condorctl CONFIG]
+    clarity-setup settings | prepare | status | fetch | doctor   (see --help of each)
 """
 
 from __future__ import annotations
@@ -12,12 +13,13 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from .backends import BackendError, connect
 from .generator import STAGES, refresh_stages, render_yaml, validate_yaml, write_pipeline
 from .project import PROJECT_FILE, Connection, Project, ProjectError
-from .scanner import scan
+from .scanner import ScanResult, scan
+from .settings import describe, parse_assignments, set_value
 
 
 def _connection(args) -> Connection:
@@ -39,7 +41,8 @@ def _resolve_root(root: str, connection: Connection) -> str:
     return root if connection.is_remote else str(Path(root).expanduser().resolve())
 
 
-def _scan_project(root: str, connection: Connection, depth: int, existing: Optional[Project] = None) -> Project:
+def _scan_project(root: str, connection: Connection, depth: int,
+                  existing: Optional[Project] = None) -> Tuple[Project, ScanResult]:
     with connect(connection.kind, connection.host, connection.profile) as backend:
         result = scan(backend, _resolve_root(root, connection), depth=depth)
     if existing is not None:
@@ -48,16 +51,15 @@ def _scan_project(root: str, connection: Connection, depth: int, existing: Optio
         project = existing
     else:
         project = Project.from_scan(result, connection=connection)
-    project._last_scan = result  # noqa: SLF001 - transient, for reporting only
     refresh_stages(project)
-    return project
+    return project, result
 
 
 def _print_table(project: Project) -> None:
     rows = [("System", "Name", "Reps", "APO", "Ligands", "Inputs", "Topology")]
     for s in project.systems:
         inputs = ",".join(k for k, v in s.inputs.items() if v) or "-"
-        ligands = ",".join(f"{l.resname}" + (f"→{l.name}" if l.name != l.resname else "") for l in s.ligands) or "-"
+        ligands = ",".join(f"{lig.resname}" + (f"→{lig.name}" if lig.name != lig.resname else "") for lig in s.ligands) or "-"
         flag = "" if s.included else " (excluded)"
         rows.append((s.key, s.name + flag, str(len(s.replicates)), "yes" if s.apo else "",
                      ligands, inputs, s.topology or "-"))
@@ -86,6 +88,8 @@ def _apply_edits(project: Project, args) -> None:
             raise ProjectError(f"--ligand needs RES=NAME or SYSTEM:RES=NAME, got {item!r}")
         system, _, res = key.rpartition(":")
         project.rename_ligand(res, new, system=system or None)
+    for name, value in parse_assignments(getattr(args, "set", None) or []):
+        set_value(project, name, value)
     refresh_stages(project)
     if getattr(args, "stages", None):
         wanted = {s.strip() for s in args.stages.split(",") if s.strip()}
@@ -99,8 +103,7 @@ def _apply_edits(project: Project, args) -> None:
 # ---------------------------------------------------------------- commands
 
 def cmd_scan(args) -> int:
-    project = _scan_project(args.root, _connection(args), args.depth)
-    result = project._last_scan  # noqa: SLF001
+    project, result = _scan_project(args.root, _connection(args), args.depth)
     if args.json:
         print(json.dumps({
             "root": project.root,
@@ -110,7 +113,7 @@ def cmd_scan(args) -> int:
             "systems": [
                 {"key": s.key, "name": s.name, "apo": s.apo, "replicates": [r.dir for r in s.replicates],
                  "topology": s.topology, "trajectories": s.trajectories,
-                 "ligands": [l.resname for l in s.ligands], "inputs": s.inputs}
+                 "ligands": [lig.resname for lig in s.ligands], "inputs": s.inputs}
                 for s in project.systems
             ],
         }, indent=2))
@@ -131,7 +134,7 @@ def cmd_init(args) -> int:
         print("error: give ROOT or an existing --project file", file=sys.stderr)
         return 1
     connection = _connection(args) if (args.ssh or args.condorctl or not existing) else existing.connection
-    project = _scan_project(root, connection, args.depth, existing)
+    project, _ = _scan_project(root, connection, args.depth, existing)
     _apply_edits(project, args)
     project.save(project_path)
     out = write_pipeline(project, Path(args.out), project_file=str(project_path))
@@ -145,35 +148,174 @@ def cmd_init(args) -> int:
     return 0
 
 
-def cmd_run(args) -> int:
-    from . import runner  # noqa: WPS433
+def _load_project(path: str) -> Project:
+    project_path = Path(path)
+    if not project_path.exists():
+        raise ProjectError(f"{project_path} not found: create it with `clarity-setup init ROOT` or the interface")
+    return Project.load(project_path)
 
-    project = Project.load(Path(args.project))
+
+def _connect_project(project: Project):
+    c = project.connection
+    return connect(c.kind, c.host, c.profile)
+
+
+def _record(project: Project, project_file: str, result: dict) -> None:
+    from . import jobs  # noqa: WPS433
+
+    record = result.get("record")
+    if record is not None:
+        jobs.add_run(project, record)
+        project.save(Path(project_file))
+        print(f"Run id: {record.id} (follow it with `clarity-setup status`)")
+
+
+def cmd_run(args) -> int:
+    from . import runner, workflow  # noqa: WPS433
+
+    project = _load_project(args.project)
     refresh_stages(project) if not project.stages else None
     text = render_yaml(project, project_file=args.project)
     validate_yaml(text)
     where = args.where or ("host" if project.connection.is_remote else "local")
     if where == "local":
         if project.connection.is_remote:
-            print("error: data is remote; use --where host or --where condor", file=sys.stderr)
+            print("error: data is remote; use --where host, condor or dag", file=sys.stderr)
             return 1
         out = Path(args.out)
         out.write_text(text)
         result = runner.run_local(out)
+        _record(project, args.project, result)
         print(f"Run finished. Report: {result['report']}")
         if result["failed_stages"]:
             print(f"Failed stages: {', '.join(result['failed_stages'])}")
             return 1
         return 0
-    with connect(project.connection.kind, project.connection.host, project.connection.profile) as backend:
+    with _connect_project(project) as backend:
         if where == "host":
             result = runner.run_on_host(backend, project, text)
             print(f"Started on {backend.label} (pid {result['pid']}). Log: {result['log']}")
+        elif where == "dag":
+            result = workflow.submit_dag(backend, project, text, cpus=args.cpus, memory=args.memory,
+                                         unit_cpus=args.unit_cpus)
+            print(f"Submitted workflow (DAG cluster {result['cluster_id']}): {len(result['units'])} parallel "
+                  f"unit(s) + final assembly job. Files: {result['dir']}")
         else:
             result = runner.submit_condor(backend, project, text, cpus=args.cpus, memory=args.memory)
             print(f"Submitted cluster {result['cluster_id']}. Output: {result['log']}")
+    _record(project, args.project, result)
     print(f"Report when finished: {result['report']}")
     return 0
+
+
+def cmd_settings(args) -> int:
+    project = _load_project(args.project)
+    if args.set:
+        for name, value in parse_assignments(args.set):
+            set_value(project, name, value)
+        project.save(Path(args.project))
+    rows = describe(project, args.stage)
+    if not rows:
+        print(f"No settings for stage {args.stage!r}", file=sys.stderr)
+        return 1
+    width = max(len(r["name"]) for r in rows)
+    for row in rows:
+        mark = "*" if row["changed"] else " "
+        value = "none" if row["value"] is None else row["value"]
+        print(f"{mark} {row['name']:<{width}}  {str(value):<22} {row['help']} [{row['type']}]")
+    print("\n* = changed from the default. Change with: clarity-setup settings --set STAGE.KEY=VALUE")
+    return 0
+
+
+def cmd_prepare(args) -> int:
+    from . import prepare  # noqa: WPS433
+
+    project = _load_project(args.project)
+    what = [w.strip() for w in args.what.split(",") if w.strip()]
+    tasks = prepare.plan_preparation(project, what=what, force=args.force, gmx=args.gmx, vmd=args.vmd,
+                                     mpi_ranks=args.mpi_ranks)
+    if not tasks:
+        print("Nothing to prepare: every included replicate already has these inputs.")
+        return 0
+    for line in prepare.summarise(tasks):
+        print(line)
+    scripts = prepare.build_scripts(project, tasks)
+    if args.dry_run:
+        print(f"\nDry run: {len(scripts)} script(s) would be written to {prepare.prep_dir(project)}")
+        for script in scripts:
+            print(f"\n--- {script.path}\n{script.text}")
+        return 0
+    if not scripts:
+        print("\nNo runnable tasks (see the reasons above).", file=sys.stderr)
+        return 1
+    where = args.where or ("host" if project.connection.is_remote else "local")
+    with _connect_project(project) as backend:
+        result = prepare.run_preparation(backend, project, scripts, where=where, cpus=args.cpus, memory=args.memory)
+    if result["where"] == "condor":
+        print(f"\nSubmitted {len(scripts)} preparation job(s) as cluster {result['cluster_id']}.")
+    else:
+        print(f"\nStarted {len(scripts)} preparation script(s) (pid {result['pid']}). Log: {result['log']}")
+    _record(project, args.project, result)
+    print("When they finish, rescan (`clarity-setup init`) so the new inputs are picked up.")
+    return 0
+
+
+def cmd_status(args) -> int:
+    from . import jobs  # noqa: WPS433
+
+    project = _load_project(args.project)
+    if not project.runs:
+        print("No runs recorded yet.")
+        return 0
+    records = [jobs.get_run(project, args.run)] if args.run or not args.all else \
+        [jobs.RunRecord.from_dict(r) for r in project.runs]
+    with _connect_project(project) as backend:
+        for record in records:
+            info = jobs.status(backend, record, lines=args.lines)
+            jobs.update_run(project, record)
+            print(f"{record.id}  [{record.kind}, {record.where}]  {info['state'].upper()}  {info.get('detail', '')}")
+            if info["log_tail"].strip():
+                print("  " + "\n  ".join(info["log_tail"].rstrip().splitlines()))
+    project.save(Path(args.project))
+    return 0
+
+
+def cmd_fetch(args) -> int:
+    from . import jobs  # noqa: WPS433
+
+    project = _load_project(args.project)
+    record = jobs.get_run(project, args.run)
+    with _connect_project(project) as backend:
+        if record.last_state not in jobs.FINISHED:
+            jobs.status(backend, record, lines=0)
+        report = jobs.fetch(backend, record, Path(args.to), force=args.force)
+    jobs.update_run(project, record)
+    project.save(Path(args.project))
+    print(f"Results of {record.id} are in {record.fetched_to}")
+    print(f"Open: {report}")
+    return 0
+
+
+def cmd_doctor(args) -> int:
+    from . import doctor  # noqa: WPS433
+
+    project_path = Path(args.project)
+    project = Project.load(project_path) if project_path.exists() and not args.root else None
+    connection = _connection(args) if (args.ssh or args.condorctl or project is None) else project.connection
+    root = args.root or (project.root if project else None)
+    if not root:
+        print("error: give ROOT or an existing --project file", file=sys.stderr)
+        return 1
+    modes = [args.where or ("host" if connection.is_remote else "local")]
+    modes += [w.strip() for w in (args.prepare or "").split(",") if w.strip()]
+    with connect(connection.kind, connection.host, connection.profile) as backend:
+        checks = doctor.run_checks(backend, _resolve_root(root, connection), modes=modes)
+    print(f"Checks for {connection.describe()}:{root} (needed for: {', '.join(modes)})\n")
+    for line in doctor.format_table(checks):
+        print(line)
+    code = doctor.exit_code(checks)
+    print("\nAll required checks passed." if code == 0 else "\nSome required checks failed (see remedies above).")
+    return code
 
 
 def cmd_tui(args) -> int:
@@ -211,6 +353,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--apo", action="append", metavar="NAME", help="Mark a system as the APO reference")
     p.add_argument("--exclude", action="append", metavar="NAME", help="Leave a system out")
     p.add_argument("--stages", help="Comma-separated stages to enable (default: all available)")
+    p.add_argument("--set", action="append", metavar="STAGE.KEY=VALUE",
+                   help="Change an analysis setting (list them with `clarity-setup settings`)")
     p.add_argument("--project", default=PROJECT_FILE, help=f"Project file (default {PROJECT_FILE})")
     p.add_argument("--out", default="pipeline.yaml", help="Pipeline YAML to write (default pipeline.yaml)")
     p.set_defaults(func=cmd_init)
@@ -218,10 +362,53 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("run", help="Run the project's pipeline locally, on the host, or via HTCondor")
     p.add_argument("--project", default=PROJECT_FILE)
     p.add_argument("--out", default="pipeline.yaml", help="Local copy of the generated YAML")
-    p.add_argument("--where", choices=["local", "host", "condor"])
-    p.add_argument("--cpus", type=int, default=4)
+    p.add_argument("--where", choices=["local", "host", "condor", "dag"],
+                   help="dag = parallel HTCondor workflow (one job per system/ligand + final job)")
+    p.add_argument("--cpus", type=int, default=4, help="CPUs for the job (the final job for dag)")
+    p.add_argument("--unit-cpus", type=int, default=1, help="CPUs per parallel unit (dag)")
     p.add_argument("--memory", default="8GB")
     p.set_defaults(func=cmd_run)
+
+    p = sub.add_parser("settings", help="List or change analysis settings per stage")
+    p.add_argument("--project", default=PROJECT_FILE)
+    p.add_argument("--stage", help="Only this stage")
+    p.add_argument("--set", action="append", metavar="STAGE.KEY=VALUE")
+    p.set_defaults(func=cmd_settings)
+
+    p = sub.add_parser("prepare", help="Produce missing inputs (processed trajectories, metrics, MM/PBSA)")
+    p.add_argument("--project", default=PROJECT_FILE)
+    p.add_argument("--what", default="trjconv,metrics,mmpbsa", help="Comma-separated: trjconv,metrics,mmpbsa")
+    p.add_argument("--where", choices=["local", "host", "condor"])
+    p.add_argument("--force", action="store_true", help="Redo inputs that already exist")
+    p.add_argument("--dry-run", action="store_true", help="Show the scripts without writing or running them")
+    p.add_argument("--gmx", default="gmx", help="GROMACS executable (gmx, gmx_mpi, ...)")
+    p.add_argument("--vmd", default="vmd")
+    p.add_argument("--mpi-ranks", type=int, default=1, help="MPI ranks for gmx_MMPBSA (1 = serial)")
+    p.add_argument("--cpus", type=int, default=1)
+    p.add_argument("--memory", default="4GB")
+    p.set_defaults(func=cmd_prepare)
+
+    p = sub.add_parser("status", help="State and log of recorded runs")
+    p.add_argument("--project", default=PROJECT_FILE)
+    p.add_argument("--run", help="Run id (default: the latest)")
+    p.add_argument("--all", action="store_true", help="Every recorded run")
+    p.add_argument("--lines", type=int, default=20, help="Log lines to show")
+    p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser("fetch", help="Download a finished run's results and report")
+    p.add_argument("--project", default=PROJECT_FILE)
+    p.add_argument("--run", help="Run id (default: the latest)")
+    p.add_argument("--to", default="clarity_results", help="Local folder (default clarity_results)")
+    p.add_argument("--force", action="store_true", help="Fetch even if the run is not finished")
+    p.set_defaults(func=cmd_fetch)
+
+    p = sub.add_parser("doctor", help="Check the data host: tools, HTCondor, space, shared filesystem")
+    p.add_argument("root", nargs="?")
+    _add_connection_args(p)
+    p.add_argument("--project", default=PROJECT_FILE)
+    p.add_argument("--where", choices=["local", "host", "condor", "dag"], help="How you plan to run")
+    p.add_argument("--prepare", help="Preparation you plan to run, e.g. trjconv,metrics,mmpbsa")
+    p.set_defaults(func=cmd_doctor)
 
     p = sub.add_parser("tui", help="Open the interactive terminal interface")
     p.add_argument("root", nargs="?")

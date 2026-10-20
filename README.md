@@ -6,8 +6,13 @@ Maintained package for molecular-dynamics analysis and visualization from GROMAC
 
 ```bash
 pip install -e .
-pip install -e ".[all]"   # optional: trajectory, ProLIF, clustering extras
+pip install -e ".[all]"   # optional: trajectory, ProLIF, clustering, interface extras
+# or a conda environment with everything (GROMACS/VMD tools optional):
+conda env create -f environment.yml
 ```
+
+Packaging metadata lives in `pyproject.toml`. Contributors run `pip install -e ".[dev]"`,
+then `ruff check`, `mypy` and `pytest --cov`, the same checks as CI.
 
 ## Setup Without YAML
 
@@ -21,7 +26,19 @@ clarity-setup tui /path/to/simulations        # interactive: rename, pick stages
 clarity-setup tui --ssh mycluster /data/inhA  # same, with data on a remote host
 clarity-setup init /path/to/simulations --rename HOLO_LigA=Isoniazid_NAD --ligand INH=Isoniazid
 clarity-setup run --where condor              # submit via HTCondor (shared filesystem)
+clarity-setup doctor                          # check gmx / vmd / gmx_MMPBSA / HTCondor where the data lives
+clarity-setup prepare --where condor          # make missing processed trajectories, metrics, MM/PBSA
+clarity-setup run --where dag                 # parallel: one HTCondor job per system/ligand + final job
+clarity-setup status && clarity-setup fetch   # follow the run, download report and figures
 ```
+
+Analysis settings (strides, cutoffs, PCA selection, bootstrap counts...) are changed with
+`clarity-setup settings --set STAGE.KEY=VALUE` or `g` in the interface. Unchanged work is
+never recomputed: stages are cached per system/ligand, keyed on their inputs and settings.
+
+Every run report also flags under-sampled replicates (block-averaged effective samples,
+half-window drift, PCA cosine content), adds replicate-level pairwise ligand tests (Welch,
+permutation, Hedges' g, Holm/BH), and records provenance.
 
 See [USAGE.md](USAGE.md#0-setup-without-yaml) for details.
 

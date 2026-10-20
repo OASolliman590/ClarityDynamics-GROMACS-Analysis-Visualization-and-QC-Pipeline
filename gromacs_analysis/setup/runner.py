@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from .backends import Backend, BackendError, CondorctlBackend
+from .jobs import new_record
 from .project import Project
 
 RUN_DIR = "clarity"
@@ -31,7 +32,12 @@ def remote_paths(project: Project) -> Dict[str, str]:
         "log": posixpath.join(base, "pipeline.log"),
         "script": posixpath.join(base, "run_clarity.sh"),
         "submit": posixpath.join(base, "run_clarity.sub"),
+        "exit": posixpath.join(base, "pipeline.exit"),
     }
+
+
+def output_root(project: Project) -> str:
+    return posixpath.join(project.root, project.output_root)
 
 
 def run_local(pipeline_path: Path, continue_on_error: bool = True) -> Dict:
@@ -42,7 +48,10 @@ def run_local(pipeline_path: Path, continue_on_error: bool = True) -> Dict:
     results = run_pipeline(config, continue_on_error=continue_on_error)
     failed = [name for name, res in results.items()
               if isinstance(res, dict) and res.get("success") is False]
-    return {"where": "local", "report": results.get("_report"), "failed_stages": failed}
+    record = new_record("analysis", "local", report=results.get("_report"),
+                        last_state="failed" if failed else "completed",
+                        note=f"failed stages: {', '.join(failed)}" if failed else "")
+    return {"where": "local", "report": results.get("_report"), "failed_stages": failed, "record": record}
 
 
 def _require_pipeline(backend: Backend, executable: str) -> None:
@@ -61,17 +70,23 @@ def run_on_host(backend: Backend, project: Project, yaml_text: str,
     _require_pipeline(backend, executable)
     paths = remote_paths(project)
     backend.write_text(paths["config"], yaml_text)
+    inner = (
+        f"{shlex.quote(executable)} --config {shlex.quote(paths['config'])} --continue-on-error; "
+        f"echo $? > {shlex.quote(paths['exit'])}"
+    )
     command = (
-        f"cd {shlex.quote(project.root)} && nohup {shlex.quote(executable)} "
-        f"--config {shlex.quote(paths['config'])} --continue-on-error "
-        f"> {shlex.quote(paths['log'])} 2>&1 < /dev/null & echo $!"
+        f"cd {shlex.quote(project.root)} && rm -f {shlex.quote(paths['exit'])} && "
+        f"nohup sh -c {shlex.quote(inner)} > {shlex.quote(paths['log'])} 2>&1 < /dev/null & echo $!"
     )
     result = backend.run(command)
     if not result.ok:
         raise BackendError(f"Could not start the pipeline on {backend.label}: {result.stderr.strip()}")
     pid = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else None
-    return {"where": "host", "pid": pid, "log": paths["log"], "config": paths["config"],
-            "report": posixpath.join(project.root, project.output_root, "report.html")}
+    report = posixpath.join(output_root(project), "report.html")
+    record = new_record("analysis", "host", pid=pid, log=paths["log"], exit_file=paths["exit"],
+                        output_dir=output_root(project), run_dir=paths["dir"], report=report, last_state="running")
+    return {"where": "host", "pid": pid, "log": paths["log"], "config": paths["config"], "report": report,
+            "record": record}
 
 
 def _classad(value) -> str:
@@ -147,6 +162,18 @@ def submit_condor(backend: Backend, project: Project, yaml_text: str, cpus: int 
     match = CLUSTER_RE.search(result.stdout)
     if not match:
         raise BackendError(f"Could not read the cluster ID from condor_submit output:\n{result.stdout}")
-    return {"where": "condor", "cluster_id": int(match.group(1)), "dir": paths["dir"],
-            "log": posixpath.join(paths["dir"], "run_clarity.out"),
-            "report": posixpath.join(project.root, project.output_root, "report.html")}
+    cluster = int(match.group(1))
+    log = posixpath.join(paths["dir"], "run_clarity.out")
+    report = posixpath.join(output_root(project), "report.html")
+    record = new_record("analysis", "condor", clusters=[cluster], log=log, output_dir=output_root(project),
+                        run_dir=paths["dir"], report=report, last_state="idle")
+    return {"where": "condor", "cluster_id": cluster, "dir": paths["dir"], "log": log, "report": report,
+            "record": record}
+
+
+def pool_policy(backend: Backend) -> Dict:
+    """Extra submit attributes and required architecture from a condorctl config (if any)."""
+    if isinstance(backend, CondorctlBackend):
+        return {"extra": dict(getattr(backend.config, "extra_submit_attributes", {}) or {}),
+                "arch": getattr(backend.config, "required_arch", None)}
+    return {"extra": {}, "arch": None}

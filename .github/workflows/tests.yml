@@ -25,11 +25,17 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-      - name: Install dependencies
+      - name: Install package with test and interface extras
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pytest "MDAnalysis>=2.0.0" "textual>=0.60" "paramiko>=3.4"
-          pip install -e . --no-deps
-      - name: Run tests
-        run: pytest -q
+          pip install -e ".[dev]"
+      - name: Lint (ruff) - maintained modules
+        run: >
+          ruff check gromacs_analysis/setup gromacs_analysis/utils/convergence.py
+          gromacs_analysis/utils/provenance.py gromacs_analysis/ranking/stats.py gromacs_analysis/pipeline/cache.py
+          tests/test_setup_scanner.py tests/test_setup_project.py tests/test_setup_tui.py tests/test_setup_runs.py
+          tests/test_convergence_stats.py tests/test_cache_provenance.py tests/setup_fixtures.py
+      - name: Type check (mypy) - setup package
+        run: mypy
+      - name: Tests with coverage
+        run: pytest -q --cov=gromacs_analysis --cov-report=term --cov-fail-under=50

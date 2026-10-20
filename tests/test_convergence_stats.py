@@ -8,13 +8,21 @@ import pandas as pd
 import pytest
 
 from gromacs_analysis.ranking.stats import (
-    benjamini_hochberg, hedges_g, holm, pairwise_tests, permutation_p, welch,
+    benjamini_hochberg,
+    hedges_g,
+    holm,
+    pairwise_tests,
+    permutation_p,
+    welch,
 )
 from gromacs_analysis.utils.convergence import (
-    block_average, cosine_content, half_agreement, half_split_rmsip, projection_convergence,
+    block_average,
+    cosine_content,
+    half_agreement,
+    half_split_rmsip,
+    projection_convergence,
     series_convergence,
 )
-
 
 # ---------------------------------------------------------------- convergence
 

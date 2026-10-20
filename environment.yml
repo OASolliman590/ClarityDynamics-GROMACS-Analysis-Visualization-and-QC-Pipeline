@@ -1,0 +1,30 @@
+# Conda environment for ClarityDynamics (analysis + interface).
+#   conda env create -f environment.yml && conda activate claritydynamics
+# GROMACS, VMD and gmx_MMPBSA are only needed to *prepare* inputs (clarity-setup prepare);
+# on clusters they usually come from modules, so they are left optional below.
+name: claritydynamics
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - numpy
+  - pandas
+  - scipy
+  - matplotlib
+  - plotly
+  - python-kaleido
+  - pyyaml
+  - mdanalysis
+  - rdkit
+  - scikit-learn
+  - seaborn
+  - textual
+  - paramiko
+  - pip
+  # Optional preparation tools (uncomment where not provided by modules):
+  # - gromacs
+  # - ambertools        # needed by gmx_MMPBSA
+  - pip:
+      - prolif
+      - -e .
+      # - gmx_MMPBSA

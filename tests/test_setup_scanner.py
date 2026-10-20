@@ -3,10 +3,10 @@
 from pathlib import Path
 
 import pytest
+from setup_fixtures import build_project
 
 from gromacs_analysis.setup.backends import LocalBackend, ShellRunner
 from gromacs_analysis.setup.scanner import scan, split_replicate
-from setup_fixtures import build_project
 
 
 @pytest.mark.parametrize("backend_cls", [LocalBackend, ShellRunner])
