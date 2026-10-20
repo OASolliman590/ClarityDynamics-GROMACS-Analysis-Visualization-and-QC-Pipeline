@@ -121,6 +121,22 @@ class MMPBSAAnalyzer:
                 except Exception as e:
                     logger.error(f"  ✗ Error creating component plot for {system_name}: {e}")
             
+            # Entropy-corrected binding energy (only when IE/C2 entropy was computed)
+            if results_data and results_data.get('entropy'):
+                try:
+                    fig = self.plotter.create_entropy_plot(results_data, system_name)
+                    if fig is not None:
+                        self.plotter.save_plot(fig, plots_dir, f"entropy_{system_name}")
+                        plots_created.append(f"entropy_{system_name}")
+                        logger.info(f"  ✓ Created entropy plot for {system_name}")
+                except Exception as e:
+                    logger.error(f"  ✗ Error creating entropy plot for {system_name}: {e}")
+            elif results_data:
+                logger.info(
+                    f"  No interaction/C2 entropy found for {system_name} "
+                    "(enable entropy in mmpbsa.in or keep FINAL_RESULTS*.dat next to CSV results)."
+                )
+
             # Decomposition plot
             if decomp_data is not None and not decomp_data.empty and results_data:
                 try:
@@ -181,6 +197,32 @@ class MMPBSAAnalyzer:
                 logger.info("  ✓ Created binding energy comparison plot")
             except Exception as e:
                 logger.error(f"  ✗ Error creating binding energy comparison plot: {e}")
+
+        # Entropy comparison across systems
+        if self.config.compare_systems and len(all_data) > 1:
+            try:
+                fig = self.plotter.create_entropy_comparison(all_data)
+                if fig is not None:
+                    self.plotter.save_plot(fig, plots_dir, "entropy_compare")
+                    plots_created.append("entropy_compare")
+                    logger.info("  ✓ Created entropy comparison plot")
+            except Exception as e:
+                logger.error(f"  ✗ Error creating entropy comparison plot: {e}")
+
+        entropy_rows = []
+        for system_name, system_data in all_data.items():
+            results_data = system_data.get('results')
+            if results_data:
+                for row in self.plotter.entropy_terms(results_data):
+                    entropy_rows.append({'System': system_name, **{k: v for k, v in row.items() if k != 'key'}})
+        if entropy_rows:
+            entropy_file = self.config.output_dir / 'data' / 'entropy_summary.csv'
+            entropy_file.parent.mkdir(parents=True, exist_ok=True)
+            pd.DataFrame(entropy_rows).rename(columns={
+                'method': 'Method', 'total': 'dTOTAL', 'total_err': 'dTOTAL_err',
+                'minus_tds': 'minus_TdS', 'minus_tds_err': 'minus_TdS_err',
+                'dg': 'dG_bind', 'dg_err': 'dG_bind_err', 'sigma': 'sigma_Eint', 'reliable': 'Reliable',
+            }).to_csv(entropy_file, index=False)
 
         # Component-by-component comparison
         if self.config.compare_components and len(all_data) > 1:
@@ -294,6 +336,8 @@ class MMPBSAAnalyzer:
                             'Component': comp_name,
                             'Mean': comp_data['mean'],
                             'Std': comp_data['std'],
+                            'SEM': comp_data.get('sem'),
+                            'Uncertainty': comp_data.get('uncertainty'),
                             'N': comp_data['n']
                         })
                     
@@ -303,6 +347,8 @@ class MMPBSAAnalyzer:
                             'Component': f'Binding_{key}',
                             'Mean': data['mean'],
                             'Std': data['std'],
+                            'SEM': data.get('sem'),
+                            'Uncertainty': data.get('uncertainty'),
                             'N': data['n']
                         })
                     
@@ -312,6 +358,8 @@ class MMPBSAAnalyzer:
                             'Component': f'Entropy_{key}',
                             'Mean': data['mean'],
                             'Std': data['std'],
+                            'SEM': data.get('sem'),
+                            'Uncertainty': data.get('uncertainty'),
                             'N': data['n']
                         })
 
@@ -384,6 +432,8 @@ class MMPBSAAnalyzer:
                         'Component': comp_name,
                         'Mean': comp_data['mean'],
                         'Std': comp_data['std'],
+                        'SEM': comp_data.get('sem'),
+                        'Uncertainty': comp_data.get('uncertainty'),
                         'N': comp_data['n']
                     })
                 
@@ -394,6 +444,8 @@ class MMPBSAAnalyzer:
                         'Component': f'Binding_{key}',
                         'Mean': data['mean'],
                         'Std': data['std'],
+                        'SEM': data.get('sem'),
+                        'Uncertainty': data.get('uncertainty'),
                         'N': data['n']
                     })
                 
@@ -404,6 +456,8 @@ class MMPBSAAnalyzer:
                         'Component': f'Entropy_{key}',
                         'Mean': data['mean'],
                         'Std': data['std'],
+                        'SEM': data.get('sem'),
+                        'Uncertainty': data.get('uncertainty'),
                         'N': data['n']
                     })
             
@@ -469,7 +523,22 @@ class MMPBSAAnalyzer:
                         mean = total.get('mean', 0.0)
                         std = total.get('std', 0.0)
                         report_lines.append(f"### {system_name}")
-                        report_lines.append(f"- **Binding Affinity (ΔG_bind):** {mean:.2f} ± {std:.2f} kcal/mol")
+                        sem = total.get('sem')
+                        spread = (
+                            f"± {sem:.2f} (SEM over {total.get('n')} replicates)"
+                            if total.get('uncertainty') == 'between_replicates' and sem is not None
+                            else f"(frame SD {std:.2f}; single run, no replicate uncertainty)"
+                        )
+                        report_lines.append(
+                            f"- **ΔTOTAL (effective binding energy, no entropy):** {mean:.2f} {spread} kcal/mol"
+                        )
+                        for key, label in (('interaction_entropy', 'IE'), ('c2_entropy', 'C2')):
+                            ent = results_data.get('entropy', {}).get(key)
+                            if ent:
+                                report_lines.append(
+                                    f"- **ΔG_bind ≈ ΔTOTAL + (−TΔS, {label}):** "
+                                    f"{mean + ent.get('mean', 0.0):.2f} kcal/mol"
+                                )
                         if qc_data:
                             found = qc_data.get('found_results_replicates')
                             expected = qc_data.get('expected_replicates')
@@ -483,6 +552,11 @@ class MMPBSAAnalyzer:
                         report_lines.append("")
             
             report_lines.extend([
+                "> MM/PBSA and MM/GBSA ΔTOTAL values are end-point estimates suited to ranking "
+                "related ligands; they are not absolute binding affinities and typically "
+                "overestimate their magnitude. Entropy corrections (IE/C2) are noisy and "
+                "should be interpreted with care.",
+                "",
                 "## Generated Plots",
                 ""
             ])

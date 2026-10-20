@@ -9,6 +9,22 @@ pip install -e .
 pip install -e ".[all]"   # optional: trajectory, ProLIF, clustering extras
 ```
 
+## Setup Without YAML
+
+`clarity-setup` finds your simulations, lets you name systems and ligands, and
+writes and runs the pipeline configuration for you, on this computer, over SSH
+or through a [condorctl](https://github.com/OASolliman590/condorctl) profile.
+
+```bash
+pip install -e ".[tui]"                       # Textual + paramiko
+clarity-setup tui /path/to/simulations        # interactive: rename, pick stages, save, run
+clarity-setup tui --ssh mycluster /data/inhA  # same, with data on a remote host
+clarity-setup init /path/to/simulations --rename HOLO_LigA=Isoniazid_NAD --ligand INH=Isoniazid
+clarity-setup run --where condor              # submit via HTCondor (shared filesystem)
+```
+
+See [USAGE.md](USAGE.md#0-setup-without-yaml) for details.
+
 ## Main Pipeline
 
 Create a project config:
@@ -39,11 +55,20 @@ gromacs-mmpbsa --help
 gromacs-pca --help
 gromacs-pipeline --help
 gromacs-orchestrate --help
+clarity-setup --help
 ```
 
 ## Usage Guide
 
 See [USAGE.md](./USAGE.md) for end-to-end use cases, stage combinations, expected outputs, and recommended run patterns.
+
+## Run Report
+
+Every pipeline run writes `<output_root>/report.html`, a single page that shows QC warnings first and then each stage's status, figures and key tables.
+
+## Scientific Validity
+
+See [SCIENTIFIC_VALIDITY.md](./SCIENTIFIC_VALIDITY.md) for the statistical conventions (replicate SEM, block averaging), corrected defects, and methodological caveats to read before interpreting results.
 
 ## Orchestrated Upstream Workflow
 
@@ -83,7 +108,7 @@ gromacs_analysis/
 - `qc`
 - `md`, `md_batch`, `md_compare`
 - `mmpbsa`
-- `pca`, `pca_batch`, `pca_compare`
+- `pca`, `pca_batch`, `pca_compare`, `pca_joint`
 - `distance`, `distance_batch`, `distance_compare`
 - `interactions`, `interactions_batch`, `interactions_compare`
 - `prolif`, `prolif_batch`, `prolif_compare`
@@ -111,3 +136,9 @@ Older standalone scripts are archived in `../../_legacy_scripts/`. They are reta
 
 - Omar Ahmed Soliman (project author and maintainer)
 - Codex (AI engineering collaborator by OpenAI)
+
+## Development
+
+- Tests: `pip install -r requirements.txt pytest MDAnalysis && pytest -q` (CI runs them on every pull request).
+- Features are specified with [GitHub Spec Kit](https://github.com/github/spec-kit): project principles in
+  `.specify/memory/constitution.md`, feature specs, plans and task lists under `specs/`.

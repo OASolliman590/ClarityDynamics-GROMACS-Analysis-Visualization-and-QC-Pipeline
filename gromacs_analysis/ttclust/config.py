@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from ..md.config import PlotConfig
+
 
 @dataclass
 class TTClustConfig:
@@ -30,6 +32,13 @@ class TTClustConfig:
     limit_matrix: Optional[int] = None
     extra_args: List[str] = field(default_factory=list)
     environment: Dict[str, str] = field(default_factory=dict)
+    # Styling/size for the cluster summary figures drawn from clustering.log.
+    plot_config: PlotConfig = field(default_factory=lambda: PlotConfig(
+        template="plotly_white",
+        font_family="Arial",
+        font_size=16,
+        save_formats=["html", "svg"],
+    ))
 
     def __post_init__(self) -> None:
         self.base_dir = Path(self.base_dir)

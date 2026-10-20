@@ -4,7 +4,7 @@ Configuration classes for ligand-protein distance analysis.
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import Union, List, Optional
 
 from ..md.config import PlotConfig
 
@@ -31,7 +31,8 @@ class DistanceConfig:
         auto_detect_selection: MDAnalysis selection string for candidate residues
         auto_detect_method: Distance method for auto-detection: 'com' or 'min'
         method: Distance method: 'com' (COM-to-COM) or 'min' (min atom distance)
-        distance_scale: Multiply distances by this factor (e.g., 10.0 to convert nm to A)
+        distance_scale: Multiply distances by this factor. MDAnalysis coordinates are
+            always in Angstrom, so keep 1.0 for Å output and use 0.1 for nm output.
         time_unit: Unit of trajectory time ('ps', 'ns', 'frame', 'auto')
         time_step_ns: Optional timestep (ns) if time unit is 'frame'
         per_residue_plots: Whether to save per-residue plots
@@ -47,7 +48,7 @@ class DistanceConfig:
     topology: Path
     trajectories: List[Path]
     ligand_selection: str = "resname UNK"
-    residue_ids: Optional[List[int]] = None
+    residue_ids: Optional[List[Union[int, str]]] = None  # ints or chain-qualified "A:45"
     residue_selection: Optional[str] = None
     auto_detect_residues: bool = False
     auto_detect_cutoff: float = 5.0

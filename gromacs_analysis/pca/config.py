@@ -31,7 +31,7 @@ class FELConfig:
     pairs: List[str] = field(default_factory=lambda: ["12"])
     contours: int = 7
     step: int = 2
-    colorscale: str = "jet"
+    colorscale: str = "Viridis"  # perceptually uniform; avoid rainbow scales such as jet
     overlay_projection: bool = True
     include_probability: bool = False
     include_entropy: bool = False
@@ -124,6 +124,8 @@ class PCAConfig:
     apo_base_dir: Optional[Path] = None  # Optional separate APO directory
     systems: list = field(default_factory=list)
     n_pcs: int = 10
+    # Ligand-bound system colour (hex). None -> first categorical slot; batches assign slots in order.
+    color: Optional[str] = None
     plot_config: PlotConfig = field(default_factory=PlotConfig)
     fel: FELConfig = field(default_factory=FELConfig)
     clustering: ClusteringConfig = field(default_factory=ClusteringConfig)
@@ -180,3 +182,54 @@ class PCACompareConfig:
         self.output_dir = Path(self.output_dir)
         if not self.systems:
             raise ValueError("PCACompareConfig.systems must not be empty")
+
+
+@dataclass
+class PCAJointSystem:
+    """One system of a joint PCA: topology plus one or more replicate trajectories."""
+    name: str
+    topology: Path
+    trajectories: List[Path]
+    is_apo: bool = False
+    color: Optional[str] = None
+
+    def __post_init__(self):
+        self.topology = Path(self.topology)
+        self.trajectories = [Path(p) for p in self.trajectories]
+        if not self.trajectories:
+            raise ValueError(f"PCAJointSystem {self.name}: trajectories must not be empty")
+
+
+@dataclass
+class PCAJointConfig:
+    """Joint PCA of several systems on one shared set of eigenvectors."""
+    output_dir: Path
+    protein_name: str
+    systems: List[PCAJointSystem]
+    base_dir: Optional[Path] = None
+    selection: str = "protein and name CA"
+    n_components: int = 10
+    n_overlap: int = 10
+    stride: int = 1
+    max_frames_per_system: Optional[int] = None
+    fit_iterations: int = 2
+    plot_config: PlotConfig = field(default_factory=lambda: PlotConfig(
+        template="plotly_white",
+        font_family="Arial",
+        font_size=16,
+        save_formats=["html", "svg"],
+    ))
+
+    def __post_init__(self):
+        self.output_dir = Path(self.output_dir)
+        if self.base_dir is not None:
+            self.base_dir = Path(self.base_dir)
+        if not self.systems:
+            raise ValueError("PCAJointConfig.systems must not be empty")
+        names = [s.name for s in self.systems]
+        if len(set(names)) != len(names):
+            raise ValueError(f"PCAJointConfig system names must be unique: {names}")
+        if self.n_components < 1 or self.n_overlap < 1:
+            raise ValueError("PCAJointConfig.n_components and n_overlap must be >= 1")
+        if self.stride < 1 or self.fit_iterations < 1:
+            raise ValueError("PCAJointConfig.stride and fit_iterations must be >= 1")

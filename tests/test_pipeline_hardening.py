@@ -552,8 +552,8 @@ def test_prolif_uses_count_aware_lignetwork_and_barcode_controls(tmp_path: Path)
     result = analyzer.run_analysis()
     assert result["success"] is True
     assert calls["lignetwork_fp"] == "count_fp"
-    assert calls["lignetwork_kwargs"]["kind"] == "frame"
-    assert calls["lignetwork_kwargs"]["frame"] == 0
+    assert calls["lignetwork_kwargs"]["kind"] == "aggregate"
+    assert calls["lignetwork_kwargs"]["threshold"] == 0.3
     assert calls["lignetwork_kwargs"]["display_all"] is True
     assert calls["barcode_kwargs"][0] == {
         "n_frame_ticks": 7,

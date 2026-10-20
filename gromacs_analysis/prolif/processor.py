@@ -18,7 +18,6 @@ class ProlifProcessor:
     def run(self) -> Dict:
         try:
             import MDAnalysis as mda  # noqa: WPS433
-            from MDAnalysis.topology.guessers import guess_types  # noqa: WPS433
             import prolif as plf  # noqa: WPS433
         except ImportError as exc:
             raise ImportError("ProLIF + MDAnalysis are required for ProLIF analysis") from exc
@@ -41,8 +40,7 @@ class ProlifProcessor:
 
             # Ensure elements are present for ProLIF.
             if not hasattr(universe.atoms, "elements"):
-                guessed_elements = guess_types(universe.atoms.names)
-                universe.add_TopologyAttr("elements", guessed_elements)
+                self._guess_elements(universe)
 
             ligand_selection = universe.select_atoms(self.config.ligand_selection)
             protein_selection = universe.select_atoms(self.config.protein_selection)
@@ -111,6 +109,16 @@ class ProlifProcessor:
             "chemistry_requirements": self._chemistry_requirements(),
             "chemistry_summary": self._summarize_chemistry(chemistry_notes),
         }
+
+    @staticmethod
+    def _guess_elements(universe) -> None:
+        """Add element types (required by ProLIF) across MDAnalysis versions."""
+        if hasattr(universe, "guess_TopologyAttrs"):  # MDAnalysis >= 2.8
+            universe.guess_TopologyAttrs(to_guess=["elements"])
+            return
+        from MDAnalysis.topology.guessers import guess_types  # noqa: WPS433
+
+        universe.add_TopologyAttr("elements", guess_types(universe.atoms.names))
 
     def _iter_trajectory(self, universe):
         if self.config.stride > 1:

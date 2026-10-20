@@ -16,6 +16,8 @@ import plotly.io as pio
 
 from .config import PCAConfig
 from ..utils.mpl_fallback import init_matplotlib
+from ..utils.figure_export import StaticExportUnavailable, write_static
+from ..utils.palette import APO_HEX, MUTED_HEX, categorical, mix, rgba, single_hue_scale
 
 # Set default Plotly export settings.
 pio.defaults.default_format = "svg"
@@ -48,6 +50,7 @@ class PCAPlotter:
             config: PCAConfig object
         """
         self.config = config
+        self.holo_color = getattr(config, 'color', None) or categorical(0)
         logger.info("PCAPlotter initialized")
     
     def calculate_variance(self, eigenvals: List[float]) -> List[float]:
@@ -81,280 +84,201 @@ class PCAPlotter:
     
     def create_scree_plot(self, eigenvals_data: Dict) -> go.Figure:
         """
-        Create scree plot (eigenvalues + cumulative variance).
-        
-        Args:
-            eigenvals_data: Dict with 'x' and 'y' (eigenvalues)
-            
-        Returns:
-            Plotly figure
+        Scree plot: eigenvalues (top) and cumulative explained variance (bottom).
+
+        Two stacked panels sharing the eigenvector axis instead of one plot with
+        two y-scales, so neither quantity is read against the wrong axis.
         """
-        xs = eigenvals_data['x'][:self.config.n_pcs]
-        ys = eigenvals_data['y'][:self.config.n_pcs]
-        variances = self.calculate_variance(eigenvals_data['y'])[:self.config.n_pcs]
-        
-        fig = make_subplots(specs=[[{"secondary_y": True}]])
+        n = min(self.config.n_pcs, len(eigenvals_data['y']))
+        xs = list(eigenvals_data['x'][:n])
+        ys = list(eigenvals_data['y'][:n])
+        variances = self.calculate_variance(eigenvals_data['y'])[:n]
+
+        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08,
+                            row_heights=[0.55, 0.45])
         fig.add_trace(
-            go.Scatter(x=xs, y=ys, mode='lines+markers', name='Individual Eigenvalues'),
-            secondary_y=False
+            go.Scatter(x=xs, y=ys, mode='lines+markers', name='Eigenvalue',
+                       line=dict(color=self.holo_color, width=2), marker=dict(size=9)),
+            row=1, col=1,
         )
         fig.add_trace(
-            go.Scatter(x=xs, y=variances, mode='lines+markers', 
-                     name='Cumulative Contribution to <br>Total Variance'),
-            secondary_y=True
+            go.Scatter(x=xs, y=variances, mode='lines+markers', name='Cumulative variance',
+                       line=dict(color=self.holo_color, width=2, dash='dot'), marker=dict(size=9),
+                       text=[f"{v:.1f}%" for v in variances], textposition='top center'),
+            row=2, col=1,
         )
-        fig.update_xaxes(dtick=1, range=(1, self.config.n_pcs))
-        fig.update_yaxes(range=(0, 100), title_text='Proportion (%)', nticks=10, 
-                        showgrid=False, secondary_y=True)
-        fig.update_yaxes(range=(0, ys[0] + 0.1 * ys[0]), nticks=10, 
-                        showgrid=False, secondary_y=False)
-        
-        self.update_fig(fig, 'Change of Eigenvalues with Eigenvectors', 
-                       'Eigenvector Number', 'Eigenvalue (nm<sup>2</sup>)')
-        
+        self.update_fig(fig, 'Eigenvalue spectrum and cumulative variance', None, None, y=0.97)
+        fig.update_xaxes(dtick=1, range=(0.5, n + 0.5))
+        fig.update_xaxes(title_text='Eigenvector', row=2, col=1)
+        fig.update_yaxes(title_text='Eigenvalue (nm²)', rangemode='tozero', row=1, col=1)
+        fig.update_yaxes(title_text='Cumulative (%)', range=(0, 100), row=2, col=1)
+        fig.update_layout(showlegend=False, height=max(self.config.plot_config.height, 750))
         return fig
-    
-    def create_cosine_content_plot(self, cc_apo: Dict, cc_holo: Dict, 
-                                  apo_name: str, holo_name: str) -> go.Figure:
+
+    def create_cosine_content_plot(self, cc_apo: Dict, cc_holo: Dict,
+                                   apo_name: str, holo_name: str) -> go.Figure:
         """
-        Create cosine content bar chart.
-        
-        Args:
-            cc_apo: APO cosine content data
-            cc_holo: HOLO cosine content data
-            apo_name: APO system name
-            holo_name: HOLO system name
-            
-        Returns:
-            Plotly figure
+        Cosine content per PC (Hess 2002). Values approaching 1 indicate random-diffusion-like,
+        unconverged sampling along that PC, so a reference line is drawn at 0.5.
         """
-        xs_apo = cc_apo['x']
-        ys_apo = cc_apo['y']
-        xs_holo = cc_holo['x']
-        ys_holo = cc_holo['y']
-        
-        # Show HOLO first, then APO for consistent legend order.
         fig = go.Figure(data=[
-            go.Bar(x=xs_holo, y=ys_holo, base=0, name=holo_name),
-            go.Bar(x=xs_apo, y=ys_apo, base=0, name=apo_name)
+            go.Bar(x=cc_holo['x'], y=cc_holo['y'], name=holo_name, marker_color=self.holo_color),
+            go.Bar(x=cc_apo['x'], y=cc_apo['y'], name=apo_name, marker_color=APO_HEX),
         ])
-        # Keep PC ticks centered on integer component numbers.
+        fig.update_layout(barmode='group', bargap=0.25, bargroupgap=0.08)
+        fig.add_hline(y=0.5, line=dict(color=MUTED_HEX, width=1, dash='dot'),
+                      annotation_text='0.5: sampling resembles random diffusion above this',
+                      annotation_position='top left', annotation_font_size=12)
         fig.update_xaxes(dtick=1, range=(0.5, self.config.n_pcs + 0.5))
         fig.update_yaxes(range=(0, 1))
-        
+
         title = cc_holo.get('title') or "Cosine content"
         ylabel = cc_holo.get('y_title') or "Cosine content"
-        self.update_fig(fig, title, 'Eigenvector Number', ylabel)
-        
+        self.update_fig(fig, title, 'Eigenvector', ylabel)
+        fig.update_layout(legend=dict(orientation='h', x=0.5, xanchor='center', y=-0.2, yanchor='top'))
         return fig
-    
+
     def create_pc_histograms(self, proj_data: Dict) -> go.Figure:
-        """
-        Create histogram subplot for first N PCs.
-        
-        Args:
-            proj_data: Dict with 'titles', 'xs', 'ys' lists
-            
-        Returns:
-            Plotly figure with subplots
-        """
-        titles = proj_data['titles'][:self.config.n_pcs]
-        xs = proj_data['xs'][:self.config.n_pcs]
-        ys = proj_data['ys'][:self.config.n_pcs]
-        
-        subplot_titles = [f'PC {i+1}' for i in range(self.config.n_pcs)]
-        subplots = make_subplots(rows=2, cols=5, subplot_titles=subplot_titles)
-        
-        row = 1
-        col = 1
-        
-        for pc_idx, (t, x, y) in enumerate(zip(titles, xs, ys)):
-            if pc_idx >= self.config.n_pcs:
-                break
-            
-            pc_num = pc_idx + 1
-            try:
-                fig1 = ff.create_distplot([y], [f'PC {pc_num}'], bin_size=0.5, 
-                                         show_rug=False, histnorm='probability')
-                fig1 = self.update_fig(fig1, f'PC {pc_num}', None, 'Normalized Probability')
-                
-                subplots.add_trace(go.Histogram(fig1['data'][0], name=f'PC {pc_num}'),
-                                 row=row, col=col)
-                subplots.add_trace(go.Scatter(fig1['data'][1], line=dict(color='blue', width=1)),
-                                 row=row, col=col)
-            except Exception as e:
-                logger.error(f"Error creating histogram for PC {pc_num}: {e}")
-                continue
-            
-            if col == 5:
-                row += 1
-                col = 1
-            else:
-                col += 1
-        
-        subplots.update_layout(showlegend=False)
-        self.update_fig(subplots, 'Histogram of the first 10 PCs', None, None, y=0.95)
-        
-        return subplots
-    
-    def create_pc_timeseries(self, proj_data: Dict) -> go.Figure:
-        """
-        Create time series subplot for first N PCs.
-        
-        Args:
-            proj_data: Dict with 'titles', 'xs', 'ys' lists
-            
-        Returns:
-            Plotly figure with subplots
-        """
-        titles = proj_data['titles'][:self.config.n_pcs]
-        xs = proj_data['xs'][:self.config.n_pcs]
-        ys = proj_data['ys'][:self.config.n_pcs]
-        
-        subplot_titles = [f'PC {i+1}' for i in range(self.config.n_pcs)]
-        subplots = make_subplots(rows=5, cols=2, subplot_titles=subplot_titles,
-                                x_title='Time (ns)', vertical_spacing=0.1)
-        
-        row = 1
-        col = 1
-        
-        for pc_idx, (t, x, y) in enumerate(zip(titles, xs, ys)):
-            if pc_idx >= self.config.n_pcs:
-                break
-            
-            try:
-                # Convert frame index to time using the default 0.1 ns step.
-                fig2 = go.Scatter(x=np.arange(len(x)) / 10, y=y, mode='lines')
-                subplots.add_trace(fig2, row=row, col=col)
-            except Exception as e:
-                logger.error(f"Error creating line plot for PC {pc_idx+1}: {e}")
-                continue
-            
-            # Fill subplot grid left-to-right.
-            if col == 2:
-                col = 1
-                row += 1
-            else:
-                col += 1
-        
-        subplots.update_layout(showlegend=False, height=1000)
-        self.update_fig(subplots, 'Projection of the trajectory on the first 10 PCs', 
-                       None, None, y=0.95)
-        
-        return subplots
-    
-    def create_2d_projection(self, proj_apo: Dict, proj_holo: Dict,
-                            pc_pair: Tuple[int, int], apo_name: str, holo_name: str) -> go.Figure:
-        """
-        Create 2D projection plot.
-        
-        Args:
-            proj_apo: APO projection data with 'x' and 'y'
-            proj_holo: HOLO projection data with 'x' and 'y'
-            pc_pair: Tuple of (PC1, PC2) numbers (e.g., (1, 2))
-            apo_name: APO system name
-            holo_name: HOLO system name
-            
-        Returns:
-            Plotly figure
-        """
-        x1 = proj_apo['x']
-        y1 = proj_apo['y']
-        x2 = proj_holo['x']
-        y2 = proj_holo['y']
-        
-        pc1, pc2 = pc_pair
-        title = f'Bidimensional projection of the trajectory <br>along PC {pc1} and PC {pc2}'
-        
-        fig = go.Figure(data=[
-            go.Scatter(
-                x=x1, y=y1,
-                mode='markers',
-                name=apo_name,
-                text=[f'Frame {i}' for i in range(len(x1))],
-                marker_colorscale='greys',
-                marker_color=list(range(len(x1)))
-            ),
-            go.Scatter(
-                x=x2, y=y2,
-                mode='markers',
-                name=holo_name,
-                text=[f'Frame {i}' for i in range(len(x2))],
-                marker_colorscale='reds',
-                marker_color=list(range(len(x2)))
+        """Distribution of the projection on each of the first N PCs (auto-binned per PC)."""
+        n = min(self.config.n_pcs, len(proj_data['ys']))
+        ys = proj_data['ys'][:n]
+        cols = 5
+        rows = (n + cols - 1) // cols
+        subplots = make_subplots(rows=rows, cols=cols, subplot_titles=[f'PC {i + 1}' for i in range(n)])
+
+        for pc_idx, y in enumerate(ys):
+            row, col = pc_idx // cols + 1, pc_idx % cols + 1
+            values = np.asarray(y, dtype=float)
+            subplots.add_trace(
+                go.Histogram(x=values, nbinsx=40, histnorm='probability density',
+                             marker=dict(color=rgba(self.holo_color, 0.55), line=dict(color='white', width=0.5)),
+                             name=f'PC {pc_idx + 1}'),
+                row=row, col=col,
             )
+            kde = self._kde(values)
+            if kde is not None:
+                subplots.add_trace(
+                    go.Scatter(x=kde[0], y=kde[1], mode='lines',
+                               line=dict(color=self.holo_color, width=2), name=f'PC {pc_idx + 1} KDE'),
+                    row=row, col=col,
+                )
+            subplots.update_xaxes(title_text='nm', row=row, col=col)
+
+        subplots.update_layout(showlegend=False, height=max(self.config.plot_config.height, 360 * rows + 120))
+        self.update_fig(subplots, f'Distribution along the first {n} PCs', None, None, y=0.98)
+        return subplots
+
+    @staticmethod
+    def _kde(values: np.ndarray, points: int = 200):
+        values = values[np.isfinite(values)]
+        if len(values) < 5 or np.std(values) == 0:
+            return None
+        try:
+            from scipy.stats import gaussian_kde
+        except ImportError:
+            return None
+        grid = np.linspace(values.min(), values.max(), points)
+        return grid, gaussian_kde(values)(grid)
+
+    def create_pc_timeseries(self, proj_data: Dict) -> go.Figure:
+        """Projection on each of the first N PCs versus simulation time (x from proj.xvg, ps -> ns)."""
+        n = min(self.config.n_pcs, len(proj_data['ys']))
+        xs = proj_data['xs'][:n]
+        ys = proj_data['ys'][:n]
+        x_titles = proj_data.get('x_titles') or []
+        x_unit = str(x_titles[0]).lower() if x_titles and x_titles[0] else 'time (ps)'
+        to_ns = 1e-3 if 'ps' in x_unit else 1.0
+
+        cols = 2
+        rows = (n + cols - 1) // cols
+        subplots = make_subplots(rows=rows, cols=cols, subplot_titles=[f'PC {i + 1}' for i in range(n)],
+                                 x_title='Time (ns)', vertical_spacing=min(0.1, 0.5 / max(rows, 1)))
+        for pc_idx, (x, y) in enumerate(zip(xs, ys)):
+            subplots.add_trace(
+                go.Scatter(x=np.asarray(x, dtype=float) * to_ns, y=y, mode='lines',
+                           line=dict(color=self.holo_color, width=1.2)),
+                row=pc_idx // cols + 1, col=pc_idx % cols + 1,
+            )
+        subplots.update_yaxes(title_text='nm')
+        subplots.update_layout(showlegend=False, height=max(self.config.plot_config.height, 200 * rows + 160))
+        self.update_fig(subplots, f'Projection of the trajectory on the first {n} PCs', None, None, y=0.98)
+        return subplots
+
+    def _time_colored_markers(self, n: int, color: str, title: str, bar_x: float, size: int = 6) -> Dict:
+        return dict(
+            size=size,
+            color=list(range(n)),
+            colorscale=single_hue_scale(color),
+            opacity=0.75,
+            line=dict(width=0),
+            showscale=True,
+            colorbar=dict(title=dict(text=title, side='right'), x=bar_x, len=0.6, thickness=12,
+                          tickvals=[0, max(n - 1, 0)], ticktext=['start', 'end']),
+        )
+
+    def _mean_marker(self, color: str, name: str, x: float, y: float, z: Optional[float] = None):
+        marker = dict(size=16, symbol='diamond', color=mix(color, '#000000', 0.25),
+                      line=dict(color='white', width=2))
+        if z is None:
+            return go.Scatter(x=[x], y=[y], mode='markers', name=name, marker=marker)
+        marker['size'] = 8
+        return go.Scatter3d(x=[x], y=[y], z=[z], mode='markers', name=name, marker=marker)
+
+    def create_2d_projection(self, proj_apo: Dict, proj_holo: Dict,
+                             pc_pair: Tuple[int, int], apo_name: str, holo_name: str) -> go.Figure:
+        """
+        2D projection, one hue per system (APO grey, ligand in its own colour).
+
+        Within a system, light-to-dark encodes trajectory progress so early and late
+        sampling can be told apart; a diamond marks each system's mean.
+        """
+        x1, y1 = proj_apo['x'], proj_apo['y']
+        x2, y2 = proj_holo['x'], proj_holo['y']
+        pc1, pc2 = pc_pair
+
+        fig = go.Figure(data=[
+            go.Scatter(x=x1, y=y1, mode='markers', name=apo_name,
+                       text=[f'Frame {i}' for i in range(len(x1))],
+                       marker=self._time_colored_markers(len(x1), APO_HEX, apo_name, 1.02)),
+            go.Scatter(x=x2, y=y2, mode='markers', name=holo_name,
+                       text=[f'Frame {i}' for i in range(len(x2))],
+                       marker=self._time_colored_markers(len(x2), self.holo_color, holo_name, 1.14)),
+            self._mean_marker(APO_HEX, f'{apo_name} mean', float(np.mean(x1)), float(np.mean(y1))),
+            self._mean_marker(self.holo_color, f'{holo_name} mean', float(np.mean(x2)), float(np.mean(y2))),
         ])
-        
-        # Add average structure markers
-        fig.add_trace(go.Scatter(
-            x=[sum(x1)/len(x1)],
-            y=[sum(y1)/len(y1)],
-            mode='markers',
-            name=f'{apo_name} average structure',
-            marker_size=10,
-            marker_color='yellow'
-        ))
-        
-        fig.add_trace(go.Scatter(
-            x=[sum(x2)/len(x2)],
-            y=[sum(y2)/len(y2)],
-            mode='markers',
-            name=f'{holo_name} average structure',
-            marker_size=10,
-            marker_color='blue'
-        ))
-        
-        self.update_fig(fig, title, f'PC{pc1}', f'PC{pc2}', y=0.95)
-        
+        self.update_fig(fig, f'Projection on PC {pc1} and PC {pc2}', f'PC{pc1} (nm)', f'PC{pc2} (nm)', y=0.95)
+        fig.update_layout(legend=dict(orientation='h', x=0.5, xanchor='center', y=-0.18, yanchor='top'),
+                          margin=dict(r=180))
         return fig
-    
+
     def create_3d_projection(self, proj_apo: Tuple[List[float], List[float], List[float]],
                              proj_holo: Tuple[List[float], List[float], List[float]],
                              apo_name: str, holo_name: str) -> go.Figure:
-        """
-        Create 3D projection plot.
-        
-        Args:
-            proj_apo: Tuple of (x, y, z) coordinates for APO
-            proj_holo: Tuple of (x, y, z) coordinates for HOLO
-            apo_name: APO system name
-            holo_name: HOLO system name
-            
-        Returns:
-            Plotly figure
-        """
+        """3D projection on PC1-3 with the same colour encoding as the 2D projections."""
         x1, y1, z1 = proj_apo
         x2, y2, z2 = proj_holo
-        
+
         fig = go.Figure(data=[
-            go.Scatter3d(
-                x=x1, y=y1, z=z1,
-                mode='markers',
-                marker_size=3,
-                name=apo_name,
-                text=[f'Frame {i}' for i in range(len(x1))],
-                marker_colorscale='greys',
-                marker_color=list(range(len(x1)))
-            ),
-            go.Scatter3d(
-                x=x2, y=y2, z=z2,
-                mode='markers',
-                marker_size=3,
-                name=holo_name,
-                text=[f'Frame {i}' for i in range(len(x2))],
-                marker_colorscale='reds',
-                marker_color=list(range(len(x2)))
-            )
+            go.Scatter3d(x=x1, y=y1, z=z1, mode='markers', name=apo_name,
+                         text=[f'Frame {i}' for i in range(len(x1))],
+                         marker=self._time_colored_markers(len(x1), APO_HEX, apo_name, 1.0, size=3)),
+            go.Scatter3d(x=x2, y=y2, z=z2, mode='markers', name=holo_name,
+                         text=[f'Frame {i}' for i in range(len(x2))],
+                         marker=self._time_colored_markers(len(x2), self.holo_color, holo_name, 1.1, size=3)),
+            self._mean_marker(APO_HEX, f'{apo_name} mean',
+                              float(np.mean(x1)), float(np.mean(y1)), float(np.mean(z1))),
+            self._mean_marker(self.holo_color, f'{holo_name} mean',
+                              float(np.mean(x2)), float(np.mean(y2)), float(np.mean(z2))),
         ])
-        
-        fig.update_layout(scene=dict(
-            xaxis_title='PC1',
-            yaxis_title='PC2',
-            zaxis_title='PC3'
-        ))
-        
+        fig.update_layout(
+            scene=dict(xaxis_title='PC1 (nm)', yaxis_title='PC2 (nm)', zaxis_title='PC3 (nm)'),
+            legend=dict(orientation='h', x=0.5, xanchor='center', y=-0.05, yanchor='top'),
+            font_family=self.config.plot_config.font_family,
+            font_size=self.config.plot_config.font_size,
+            height=max(self.config.plot_config.height, 800),
+        )
         return fig
-    
+
     def create_rmsip_heatmap(self, xpm_data: np.ndarray) -> go.Figure:
         """
         Create RMSIP heatmap from XPM data.
@@ -383,7 +307,7 @@ class PCAPlotter:
         y_coords: List[float],
         pc_pair: Tuple[int, int],
         overlay: Optional[Tuple[List[float], List[float]]] = None,
-        colorscale: str = "jet",
+        colorscale: str = "Viridis",
         contours: int = 7,
         title: Optional[str] = None,
         z_title: str = "G (kJ/mol)",
@@ -438,7 +362,7 @@ class PCAPlotter:
                     mode='lines+markers',
                     marker_size=5,
                     line_width=0.6,
-                    line_color='black',
+                    line_color='rgba(255,255,255,0.7)',
                     marker_colorscale='greys',
                     marker_showscale=False,
                     showlegend=False,
@@ -489,7 +413,7 @@ class PCAPlotter:
         title: str,
         x_label: str,
         y_label: str,
-        colorscale: str = "jet",
+        colorscale: str = "Viridis",
     ) -> go.Figure:
         """Create heatmap from XPM data."""
         fig = go.Figure(
@@ -524,14 +448,8 @@ class PCAPlotter:
             try:
                 if fmt == 'html':
                     fig.write_html(str(file_path))
-                elif fmt == 'svg':
-                    fig.write_image(str(file_path), format='svg',
-                                  width=self.config.plot_config.width * self.config.plot_config.scale,
-                                  height=self.config.plot_config.height * self.config.plot_config.scale)
-                elif fmt == 'png':
-                    fig.write_image(str(file_path), format='png',
-                                  width=self.config.plot_config.width * self.config.plot_config.scale,
-                                  height=self.config.plot_config.height * self.config.plot_config.scale)
+                elif fmt in ('svg', 'png', 'pdf'):
+                    write_static(fig, file_path, fmt, self.config.plot_config.width, self.config.plot_config.height, self.config.plot_config.scale)
                 
                 logger.info(f"Saved {fmt} plot: {file_path}")
             except Exception as e:
@@ -539,6 +457,9 @@ class PCAPlotter:
                     if self._save_svg_fallback(file_path, fallback):
                         logger.info(f"Saved SVG via matplotlib fallback: {file_path}")
                         continue
+                if isinstance(e, StaticExportUnavailable):
+                    logger.debug("Static export unavailable; skipped %s", file_path)
+                    continue
                 logger.error(f"Error saving {fmt} plot {file_path}: {e}")
 
     def _save_svg_fallback(self, file_path: Path, fallback: Dict) -> bool:
@@ -604,7 +525,7 @@ class PCAPlotter:
         ax2 = ax1.twinx()
 
         ax1.plot(xs, ys, marker='o', label='Individual Eigenvalues')
-        ax2.plot(xs, variances, marker='o', color='tab:red',
+        ax2.plot(xs, variances, marker='o', color=self.holo_color, linestyle=':',
                  label='Cumulative Contribution to Total Variance')
 
         ax1.set_xlabel('Eigenvector Number')
@@ -671,7 +592,7 @@ class PCAPlotter:
             row = idx // 5
             col = idx % 5
             ax = axes[row][col]
-            ax.hist(y_vals, bins=30, density=True, color='lightgray', edgecolor='black')
+            ax.hist(y_vals, bins=30, density=True, color=self.holo_color, alpha=0.6, edgecolor='white')
             ax.set_title(f"PC {idx + 1}")
             ax.tick_params(axis='both', labelsize=8)
 
@@ -727,11 +648,11 @@ class PCAPlotter:
         pc1, pc2 = pc_pair
 
         _, plt, ax = self._base_fig()
-        ax.scatter(x1, y1, s=8, alpha=0.6, label=apo_name, color='gray')
-        ax.scatter(x2, y2, s=8, alpha=0.6, label=holo_name, color='red')
+        ax.scatter(x1, y1, s=8, alpha=0.6, label=apo_name, color=APO_HEX)
+        ax.scatter(x2, y2, s=8, alpha=0.6, label=holo_name, color=self.holo_color)
 
-        ax.scatter([sum(x1) / len(x1)], [sum(y1) / len(y1)], s=40, color='yellow', label=f'{apo_name} average')
-        ax.scatter([sum(x2) / len(x2)], [sum(y2) / len(y2)], s=40, color='blue', label=f'{holo_name} average')
+        ax.scatter([sum(x1) / len(x1)], [sum(y1) / len(y1)], s=90, marker='D', color=mix(APO_HEX, '#000000', 0.25), edgecolors='white', label=f'{apo_name} mean')
+        ax.scatter([sum(x2) / len(x2)], [sum(y2) / len(y2)], s=90, marker='D', color=mix(self.holo_color, '#000000', 0.25), edgecolors='white', label=f'{holo_name} mean')
 
         ax.set_title(f'Bidimensional projection of the trajectory along PC {pc1} and PC {pc2}')
         ax.set_xlabel(f'PC{pc1}')
@@ -760,8 +681,8 @@ class PCAPlotter:
         plt.rcParams['font.size'] = self.config.plot_config.font_size - 2
         ax = fig.add_subplot(111, projection='3d')
 
-        ax.scatter(x1, y1, z1, s=6, alpha=0.6, label=apo_name, color='gray')
-        ax.scatter(x2, y2, z2, s=6, alpha=0.6, label=holo_name, color='red')
+        ax.scatter(x1, y1, z1, s=6, alpha=0.6, label=apo_name, color=APO_HEX)
+        ax.scatter(x2, y2, z2, s=6, alpha=0.6, label=holo_name, color=self.holo_color)
         ax.set_xlabel('PC1')
         ax.set_ylabel('PC2')
         ax.set_zlabel('PC3')

@@ -32,6 +32,42 @@ class AnalysisMetric:
     ylabel: str
     is_holo_only: bool = False
     data_format: str = 'two_column'
+    # Set for per-ligand variants of ligand metrics in multi-ligand complexes.
+    ligand: Optional[str] = None
+    # Display unit of the values (e.g. "Å", "Å^2"); inferred from ylabel when None.
+    unit: Optional[str] = None
+
+    @property
+    def base_name(self) -> str:
+        """Metric family name without the per-ligand suffix (e.g. 'rmsd_lig')."""
+        if self.ligand and self.name.endswith(f"_{self.ligand}"):
+            return self.name[: -len(self.ligand) - 1]
+        return self.name
+
+
+# Ligand-specific metrics that are split per ligand when a complex holds several ligands.
+LIGAND_METRICS = {
+    'rmsd_lig': ['RMSD_{lig}.dat', 'RMSD_{lig}_*.dat', 'RMSD_lig_{lig}*.dat', 'RMSD_ligand_{lig}*.dat'],
+    'comcom': ['comcom_{lig}.dat', 'comcom_{lig}_*.dat', 'COM_{lig}*.dat'],
+    'hbonds_lig': ['hbonds_lig_{lig}.dat', 'hbonds_lig_{lig}_*.dat'],
+}
+
+
+@dataclass
+class RMSFTerminalConfig:
+    """Show flexible terminal overhangs on RMSF plots (same rule as the PCA core trimming).
+
+    Terminal residues are flagged while their smoothed RMSF stays above
+    median + mad_multiplier * MAD (robust threshold) from either end, until
+    ``stable_run`` consecutive residues fall below it. They are drawn faded with
+    boundary lines rather than removed, so the full profile stays visible.
+    """
+    enabled: bool = True
+    smoothing_window: int = 3
+    mad_multiplier: float = 3.0
+    stable_run: int = 3
+    max_terminal_fraction: float = 0.25
+    show_threshold: bool = True
 
 
 @dataclass
@@ -53,16 +89,14 @@ class SystemConfig:
     replicates: int = 1
     color: Optional[Tuple[int, int, int]] = None
     dir_names: Optional[List[str]] = None
-    
+
     def __post_init__(self):
-        """Set default colors based on system type."""
+        """Normalise replicate count. Colours left as None are assigned by the
+        plotter from the shared palette (APO grey, ligands in fixed hue order)."""
         if self.dir_names:
             self.replicates = len(self.dir_names)
-        if self.color is None:
-            if self.is_apo:
-                self.color = (0, 125, 0)  # Green for APO (legacy palette)
-            else:
-                self.color = (175, 0, 0)  # Red for HOLO
+        if self.color is not None:
+            self.color = tuple(int(c) for c in self.color)[:3]
 
 
 @dataclass
@@ -103,8 +137,14 @@ class PlotConfig:
 
 @dataclass
 class StabilityConfig:
-    """Configuration for auto-detecting equilibration/stable window."""
+    """Configuration for auto-detecting equilibration/stable window.
+
+    method "chodera" (default) picks the start maximising the effective number of
+    uncorrelated samples (Chodera 2016); "window" is the previous std/slope rule.
+    """
     enabled: bool = False
+    method: str = "chodera"
+    n_candidates: int = 100
     metric: str = "rmsd_prot"
     window: int = 50
     std_threshold: float = 0.2
@@ -144,7 +184,15 @@ class MDConfig:
     time_step_ps: Optional[float] = None
     time_scale: Optional[float] = None
     smoothing_window: int = 1
-    outlier_threshold: float = 3.0
+    # Ligands present in each complex (names or {name, selection} dicts). When more
+    # than one is given, ligand metrics (ligand RMSD, COM-COM) are split per ligand.
+    ligands: List[Union[str, Dict[str, str]]] = field(default_factory=list)
+    rmsf_terminals: RMSFTerminalConfig = field(default_factory=RMSFTerminalConfig)
+    # Convert values whose .xvg header declares nm / nm^2 to the metric's display unit.
+    convert_units: bool = True
+    # |z| threshold for masking outliers; None/0 disables (default). Large excursions in
+    # MD observables are usually real events, so only enable this to drop known artefacts.
+    outlier_threshold: Optional[float] = None
     
     def __post_init__(self):
         """Convert paths to Path objects and set default metrics."""
@@ -164,11 +212,51 @@ class MDConfig:
         if self.time_scale is not None:
             self.time_scale = float(self.time_scale)
         self.smoothing_window = max(1, int(self.smoothing_window))
-        self.outlier_threshold = float(self.outlier_threshold)
+        if self.outlier_threshold is not None:
+            self.outlier_threshold = float(self.outlier_threshold)
+            if self.outlier_threshold <= 0:
+                self.outlier_threshold = None
         
         # Set default metrics if none provided
         if not self.metrics:
             self.metrics = self.get_default_metrics()
+        self.metrics = self._expand_ligand_metrics(self.metrics, self.ligand_names)
+
+    @property
+    def ligand_names(self) -> List[str]:
+        names = []
+        for lig in self.ligands or []:
+            name = lig.get('name') if isinstance(lig, dict) else lig
+            if name:
+                names.append(str(name))
+        return names
+
+    @staticmethod
+    def _expand_ligand_metrics(metrics: List[AnalysisMetric], ligands: List[str]) -> List[AnalysisMetric]:
+        """Replace ligand metrics by one metric per ligand when a complex has several ligands."""
+        if len(ligands) < 2:
+            return metrics
+        existing = {m.name for m in metrics}
+        expanded: List[AnalysisMetric] = []
+        for metric in metrics:
+            patterns = LIGAND_METRICS.get(metric.name)
+            if metric.ligand is not None or patterns is None:
+                expanded.append(metric)
+                continue
+            for lig in ligands:
+                name = f"{metric.name}_{lig}"
+                if name in existing:
+                    continue
+                expanded.append(AnalysisMetric(
+                    name=name,
+                    file_pattern=",".join(p.format(lig=lig) for p in patterns),
+                    title=f"{metric.title} · {lig}",
+                    ylabel=metric.ylabel,
+                    is_holo_only=True,
+                    data_format=metric.data_format,
+                    ligand=lig,
+                ))
+        return expanded
     
     @staticmethod
     def get_default_metrics() -> List[AnalysisMetric]:
@@ -226,8 +314,16 @@ class MDConfig:
                 name='hbonds',
                 file_pattern='hbonds*.dat,Hbond*.dat',
                 title='Number of Hydrogen bonds',
-                ylabel='Change in the number of bonds',
+                ylabel='Number of hydrogen bonds',
                 is_holo_only=False,
+                data_format='two_column'
+            ),
+            AnalysisMetric(
+                name='hbonds_lig',
+                file_pattern='hbonds_lig*.dat',
+                title='Protein–ligand hydrogen bonds',
+                ylabel='Number of hydrogen bonds',
+                is_holo_only=True,
                 data_format='two_column'
             ),
             AnalysisMetric(
@@ -278,7 +374,7 @@ class MDConfig:
             time_step_ps=data.get('time_step_ps'),
             time_scale=data.get('time_scale'),
             smoothing_window=data.get('smoothing_window', 1),
-            outlier_threshold=data.get('outlier_threshold', 3.0),
+            outlier_threshold=data.get('outlier_threshold'),
         )
     
     def to_json(self, json_file: Path):

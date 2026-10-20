@@ -155,6 +155,8 @@ def load_yaml_config(yaml_file: Path) -> MDConfig:
         slope_threshold=stability_data.get('slope_threshold', 0.01),
         min_points=stability_data.get('min_points', 100),
         apply_to_all_metrics=bool(stability_data.get('apply_to_all_metrics', True)),
+        method=stability_data.get('method', 'chodera'),
+        n_candidates=int(stability_data.get('n_candidates', 100)),
     )
 
     # Create config
@@ -171,7 +173,7 @@ def load_yaml_config(yaml_file: Path) -> MDConfig:
         sequence_topology=Path(data["sequence_topology"]) if data.get("sequence_topology") else None,
         sequence_selection=data.get("sequence_selection", "protein"),
         smoothing_window=data.get("smoothing_window", data.get("analysis", {}).get("smoothing_window", 1)),
-        outlier_threshold=data.get("outlier_threshold", data.get("analysis", {}).get("outlier_threshold", 3.0)),
+        outlier_threshold=data.get("outlier_threshold", data.get("analysis", {}).get("outlier_threshold")),
     )
     
     logger.info(f"Configuration loaded successfully")

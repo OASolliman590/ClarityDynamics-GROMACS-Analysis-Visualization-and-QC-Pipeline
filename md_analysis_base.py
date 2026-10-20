@@ -4,6 +4,18 @@ Base classes for enhanced MD analysis with modern visualization capabilities
 Provides common functionality for both holo and apo analysis workflows
 """
 
+import sys as _sys
+import warnings as _warnings
+
+_DEPRECATION = (
+    "md_analysis_base.py is deprecated and unmaintained: it keeps the old z-score outlier removal and lacks the "
+    "replicate statistics, unit handling and other fixes of the gromacs_analysis package. "
+    "Use `gromacs_analysis.md` (CLI: `gromacs-md`) instead (see USAGE.md)."
+)
+_warnings.warn(_DEPRECATION, DeprecationWarning, stacklevel=2)
+print("WARNING: " + _DEPRECATION, file=_sys.stderr)
+
+
 import json
 import numpy as np
 import pandas as pd

@@ -111,6 +111,8 @@ class QCAnalyzer:
                 continue
 
             entry.update(self._extract_trajectory_metadata(traj))
+            self._check_sampling(entry, report)
+            self._check_ligand_contact(entry, report)
             entries.append(entry)
 
         report["checks"]["trajectories"] = entries
@@ -125,6 +127,8 @@ class QCAnalyzer:
             "protein_selection_count": None,
             "ligand_selection_count": None,
             "min_ligand_protein_distance": None,
+            "max_ligand_protein_min_distance": None,
+            "uniform_sampling": None,
         }
 
         parsed_time = self._parse_text_times(path)
@@ -134,6 +138,7 @@ class QCAnalyzer:
             metadata["time_unit"] = inferred_unit
             if len(times) > 1:
                 metadata["timestep"] = float(np.median(np.diff(times)))
+                metadata.update(self._sampling_summary(times))
             return metadata
 
         # Optional MDAnalysis route for binary trajectories/topologies.
@@ -149,6 +154,10 @@ class QCAnalyzer:
         try:
             universe = mda.Universe(str(self.config.topology), str(path))
             metadata["frame_count"] = len(universe.trajectory)
+            if self.config.check_frame_times:
+                times = np.array([ts.time for ts in universe.trajectory], dtype=float)
+                if len(times) > 1:
+                    metadata.update(self._sampling_summary(times))
             metadata["timestep"] = float(universe.trajectory.dt) if universe.trajectory.dt else None
             metadata["time_unit"] = "ps"
             dimensions = universe.trajectory.ts.dimensions
@@ -163,22 +172,27 @@ class QCAnalyzer:
             metadata["ligand_selection_count"] = int(ligand.n_atoms)
 
             if protein.n_atoms > 0 and ligand.n_atoms > 0:
-                min_dist = self._sample_min_distance(
+                per_frame = self._sample_min_distances(
                     universe,
                     protein,
                     ligand,
                     distances,
                 )
-                metadata["min_ligand_protein_distance"] = min_dist
-                cutoff = self.config.min_distance_cutoff
-                if cutoff is not None and min_dist is not None and min_dist < cutoff:
-                    logger.warning("Minimum ligand-protein distance below configured cutoff.")
+                if per_frame:
+                    metadata["min_ligand_protein_distance"] = float(min(per_frame))
+                    metadata["max_ligand_protein_min_distance"] = float(max(per_frame))
+                    cutoff = self.config.dissociation_cutoff
+                    if cutoff is not None:
+                        metadata["fraction_frames_ligand_detached"] = float(
+                            np.mean(np.asarray(per_frame) > cutoff)
+                        )
         except Exception as exc:
             logger.warning(f"Could not parse trajectory metadata for {path}: {exc}")
 
         return metadata
 
-    def _sample_min_distance(self, universe, protein, ligand, distances_module) -> Optional[float]:
+    def _sample_min_distances(self, universe, protein, ligand, distances_module) -> List[float]:
+        """Per-frame minimum ligand-protein heavy-contact distance (Å) on sampled frames."""
         mins: List[float] = []
         sampled = 0
         for frame_idx, _ in enumerate(universe.trajectory):
@@ -193,9 +207,48 @@ class QCAnalyzer:
             sampled += 1
             if self.config.max_frames and sampled >= self.config.max_frames:
                 break
-        if not mins:
-            return None
-        return float(min(mins))
+        return mins
+
+    @staticmethod
+    def _sampling_summary(times: np.ndarray) -> Dict:
+        """Detect non-uniform frame spacing (gaps, overlaps from restarts, duplicates)."""
+        diffs = np.diff(np.asarray(times, dtype=float))
+        if len(diffs) == 0:
+            return {}
+        step = float(np.median(diffs))
+        tol = max(abs(step) * 1e-3, 1e-6)
+        irregular = np.abs(diffs - step) > tol
+        return {
+            "uniform_sampling": bool(not irregular.any()),
+            "irregular_steps": int(irregular.sum()),
+            "non_increasing_steps": int(np.sum(diffs <= 0)),
+        }
+
+    def _check_sampling(self, entry: Dict, report: Dict) -> None:
+        if entry.get("uniform_sampling") is False:
+            report["warnings"].append(
+                f"{entry['path']}: {entry.get('irregular_steps')} irregular frame interval(s) "
+                f"({entry.get('non_increasing_steps')} non-increasing). Check for restarts, "
+                "duplicated frames or gaps (e.g. use gmx trjcat -settime) before analysis."
+            )
+
+    def _check_ligand_contact(self, entry: Dict, report: Dict) -> None:
+        clash = self.config.min_distance_cutoff
+        min_dist = entry.get("min_ligand_protein_distance")
+        if clash is not None and min_dist is not None and min_dist < clash:
+            report["warnings"].append(
+                f"{entry['path']}: ligand-protein minimum distance {min_dist:.2f} Å is below "
+                f"{clash} Å (possible steric clash or broken PBC)."
+            )
+        detach = self.config.dissociation_cutoff
+        max_min = entry.get("max_ligand_protein_min_distance")
+        if detach is not None and max_min is not None and max_min > detach:
+            fraction = entry.get("fraction_frames_ligand_detached") or 0.0
+            report["warnings"].append(
+                f"{entry['path']}: ligand loses contact with the protein (> {detach} Å) in "
+                f"{fraction:.0%} of sampled frames. Binding-site metrics and MM/PBSA averages "
+                "over these frames are not meaningful, or the trajectory is not PBC-corrected."
+            )
 
     def _infer_atom_count(self, topology: Path) -> Optional[int]:
         suffix = topology.suffix.lower()
@@ -232,10 +285,18 @@ class QCAnalyzer:
             return None
 
         times: List[float] = []
+        header_unit: Optional[str] = None
         with open(path, "r") as handle:
             for raw_line in handle:
                 line = raw_line.strip()
                 if not line:
+                    continue
+                if line.startswith("@") and "xaxis" in line and "label" in line:
+                    label = line.lower()
+                    if "(ps)" in label:
+                        header_unit = "ps"
+                    elif "(ns)" in label:
+                        header_unit = "ns"
                     continue
                 if line.startswith(("@", "#", ";")):
                     continue
@@ -249,7 +310,9 @@ class QCAnalyzer:
 
         if not times:
             return None
-        time_unit = "ps"
-        if max(times) <= 1000:
-            time_unit = "ns"
+        # GROMACS .xvg files declare the x-axis unit in the header; only fall back
+        # to a magnitude heuristic (ambiguous for short runs) when it is absent.
+        time_unit = header_unit
+        if time_unit is None:
+            time_unit = "ps" if max(times) > 1000 else "ns"
         return np.array(times, dtype=float), time_unit

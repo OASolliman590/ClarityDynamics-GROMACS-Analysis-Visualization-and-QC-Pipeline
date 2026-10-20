@@ -17,27 +17,18 @@ from .config import PCACompareConfig, PCAConfig
 from .processor import PCAProcessor
 from .parser import PCAParser
 from ..utils.mpl_fallback import init_matplotlib
+from ..utils.figure_export import StaticExportUnavailable, write_static
+from ..utils.palette import categorical, hex_to_rgb
 
 logger = logging.getLogger(__name__)
 
-_PALETTE = [
-    (31, 119, 180),
-    (255, 127, 14),
-    (44, 160, 44),
-    (214, 39, 40),
-    (148, 103, 189),
-    (140, 86, 75),
-    (227, 119, 194),
-    (127, 127, 127),
-    (188, 189, 34),
-    (23, 190, 207),
-]
 
 
 class PCAComparisonAnalyzer:
     def __init__(self, config: PCACompareConfig):
         self.config = config
         self.parser = PCAParser()
+        self._system_colors: Dict[str, Tuple[int, int, int]] = {}
         pio.templates.default = config.plot_config.template
 
     def run_analysis(self) -> Dict:
@@ -53,7 +44,17 @@ class PCAComparisonAnalyzer:
         data_dir = self.config.output_dir / "data"
         plots_created: List[str] = []
 
-        # 2D projection comparisons
+        # 2D projection comparisons.
+        # Each system's projections are onto its *own* eigenvectors, so PC axes are
+        # neither the same collective motions nor sign-consistent across systems.
+        # A quantitative comparison needs a common basis: run one gmx covar on the
+        # concatenated (identically fitted) trajectories and project every system
+        # onto those eigenvectors, or compare subspaces via RMSIP (gmx anaeig -over).
+        if self.config.compare_pairs and len(systems_data) > 1:
+            logger.warning(
+                "PCA projection overlays use system-specific eigenvectors; axes are not a common "
+                "basis. Use a joint covariance (concatenated trajectories) for quantitative comparison."
+            )
         for pair in self.config.compare_pairs:
             proj_series = self._collect_projection_series(systems_data, pair)
             if not proj_series:
@@ -116,6 +117,7 @@ class PCAComparisonAnalyzer:
             files = processor.auto_detect_files()
             ligand_name = cfg.ligand_name or files.get("ligand_name") or Path(cfg.base_dir).name
             systems_data[ligand_name] = {"config": cfg, "files": files}
+            self._system_colors[ligand_name] = hex_to_rgb(cfg.color or categorical(len(self._system_colors)))
         return systems_data
 
     def _collect_projection_series(self, systems_data: Dict[str, Dict], pair: str) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
@@ -176,13 +178,14 @@ class PCAComparisonAnalyzer:
             return x[::step], y[::step]
         return x, y
 
-    def _color_for_index(self, idx: int) -> Tuple[int, int, int]:
-        return _PALETTE[idx % len(_PALETTE)]
+    def _color_for(self, ligand_name: str) -> Tuple[int, int, int]:
+        """Each ligand keeps one colour across comparison figures (config colour or palette slot)."""
+        return self._system_colors.get(ligand_name) or hex_to_rgb(categorical(len(self._system_colors)))
 
     def _create_projection_plot(self, pair: str, series: Dict[str, Tuple[np.ndarray, np.ndarray]]) -> go.Figure:
         fig = go.Figure()
         for idx, (ligand_name, (x, y)) in enumerate(series.items()):
-            color = self._color_for_index(idx)
+            color = self._color_for(ligand_name)
             fig.add_trace(go.Scatter(
                 x=x,
                 y=y,
@@ -195,6 +198,18 @@ class PCAComparisonAnalyzer:
                 )
             ))
 
+        fig.add_annotation(
+            text=(
+                "Each system projected on its own eigenvectors; axes are not a common basis "
+                "(qualitative comparison only)."
+            ),
+            xref="paper",
+            yref="paper",
+            x=0.5,
+            y=1.02,
+            showarrow=False,
+            font=dict(size=10),
+        )
         fig.update_layout(
             title=f"PCA Projection PC{pair[0]} vs PC{pair[1]} · {self.config.protein_name}",
             xaxis_title=f"PC{pair[0]}",
@@ -214,7 +229,7 @@ class PCAComparisonAnalyzer:
     def _create_scree_plot(self, series: Dict[str, Dict[str, np.ndarray]]) -> go.Figure:
         fig = go.Figure()
         for idx, (ligand_name, data) in enumerate(series.items()):
-            color = self._color_for_index(idx)
+            color = self._color_for(ligand_name)
             fig.add_trace(go.Scatter(
                 x=data["pcs"],
                 y=data["cumulative"],
@@ -242,7 +257,7 @@ class PCAComparisonAnalyzer:
     def _create_cosine_plot(self, series: Dict[str, Tuple[np.ndarray, np.ndarray]]) -> go.Figure:
         fig = go.Figure()
         for idx, (ligand_name, (pcs, values)) in enumerate(series.items()):
-            color = self._color_for_index(idx)
+            color = self._color_for(ligand_name)
             fig.add_trace(go.Scatter(
                 x=pcs,
                 y=values,
@@ -288,18 +303,16 @@ class PCAComparisonAnalyzer:
                 if fmt == "html":
                     fig.write_html(str(file_path))
                 elif fmt in ("svg", "png"):
-                    fig.write_image(
-                        str(file_path),
-                        format=fmt,
-                        width=self.config.plot_config.width * self.config.plot_config.scale,
-                        height=self.config.plot_config.height * self.config.plot_config.scale,
-                    )
+                    write_static(fig, file_path, fmt, self.config.plot_config.width, self.config.plot_config.height, self.config.plot_config.scale)
                 logger.info(f"Saved {fmt} plot: {file_path}")
             except Exception as exc:
                 if fmt == "svg" and fallback:
                     if self._save_svg_fallback(file_path, fallback):
                         logger.info(f"Saved SVG via matplotlib fallback: {file_path}")
                         continue
+                if isinstance(exc, StaticExportUnavailable):
+                    logger.debug("Static export unavailable; skipped %s", file_path)
+                    continue
                 logger.error(f"Error saving {fmt} plot {file_path}: {exc}")
 
     def _save_svg_fallback(self, file_path: Path, fallback: Dict) -> bool:
@@ -338,7 +351,7 @@ class PCAComparisonAnalyzer:
         plt.rcParams['font.size'] = self.config.plot_config.font_size
 
         for idx, (ligand_name, (x, y)) in enumerate(series.items()):
-            color = self._color_for_index(idx)
+            color = self._color_for(ligand_name)
             ax.scatter(x, y, s=5, alpha=0.55, label=ligand_name, color=(color[0]/255, color[1]/255, color[2]/255))
 
         ax.set_xlabel(f"PC{pair[0]}")
@@ -362,7 +375,7 @@ class PCAComparisonAnalyzer:
         plt.rcParams['font.size'] = self.config.plot_config.font_size
 
         for idx, (ligand_name, data) in enumerate(series.items()):
-            color = self._color_for_index(idx)
+            color = self._color_for(ligand_name)
             ax.plot(data["pcs"], data["cumulative"], marker='o', linewidth=2, label=ligand_name,
                     color=(color[0]/255, color[1]/255, color[2]/255))
 
@@ -387,7 +400,7 @@ class PCAComparisonAnalyzer:
         plt.rcParams['font.size'] = self.config.plot_config.font_size
 
         for idx, (ligand_name, (pcs, values)) in enumerate(series.items()):
-            color = self._color_for_index(idx)
+            color = self._color_for(ligand_name)
             ax.plot(pcs, values, marker='o', linewidth=2, label=ligand_name,
                     color=(color[0]/255, color[1]/255, color[2]/255))
 

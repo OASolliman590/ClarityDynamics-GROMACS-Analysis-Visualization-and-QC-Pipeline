@@ -218,41 +218,49 @@ class MMPBSAParser:
         """
         delta_components = {}
         
-        # Primary method: Look for "Delta (Complex - Receptor - Ligand):" section
+        # Primary method: Look for "Delta (Complex - Receptor - Ligand):" section.
+        # gmx_MMPBSA >= 1.5 columns: Average, SD(Prop.), SD, SEM(Prop.), SEM.
+        # Older releases: Average, Std. Dev., Std. Err. of Mean.
         delta_section_match = re.search(
             r"Delta \(Complex - Receptor - Ligand\):\s*\n([\s\S]*?)\n-+\s*\n-+\s*\n",
             content
+        ) or re.search(
+            r"Delta \(Complex - Receptor - Ligand\):\s*\n([\s\S]*?)(?:\n\s*\n|\Z)",
+            content
         )
-        
+
         if delta_section_match:
             delta_section = delta_section_match.group(1)
-            
-            # Extract components from delta section
-            # Pattern: ΔVDWAALS, ΔEEL, ΔEGB, ΔESURF, ΔGGAS, ΔGSOLV, ΔTOTAL
-            components = ['VDWAALS', 'EEL', 'EGB', 'ESURF', 'GGAS', 'GSOLV', 'TOTAL']
-            
+            components = [
+                'VDWAALS', 'EEL', 'EGB', 'EPB', 'ESURF', 'ENPOLAR', 'EDISPER',
+                'GGAS', 'GSOLV', 'TOTAL',
+            ]
+            number = r"-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?"
             for comp in components:
-                # Try different patterns
-                patterns = [
-                    rf"Δ{comp}\s+([\d.-]+)",  # Simple: ΔVDWAALS -30.5
-                    rf"Δ{comp}\s+=\s+([\d.-]+)",  # With equals: ΔVDWAALS = -30.5
-                    rf"Δ{comp}\s+([\d.-]+)\s+\(([\d.-]+)\)\s+\(([\d.-]+)\)",  # With SD: ΔVDWAALS -30.5 (1.2) (0.3)
-                ]
-                
-                for pattern in patterns:
-                    match = re.search(pattern, delta_section)
-                    if match:
-                        value = float(match.group(1))
-                        std_dev = float(match.group(2)) if len(match.groups()) >= 2 else 0.0
-                        std_err = float(match.group(3)) if len(match.groups()) >= 3 else 0.0
-                        
-                        delta_components[f'Δ{comp}'] = {
-                            'value': value,
-                            'std_dev': std_dev,
-                            'std_err': std_err
-                        }
-                        break
-        
+                match = re.search(
+                    rf"^[ \t]*Δ{comp}[ \t]*=?[ \t]+((?:{number}[ \t()]*)+)$",
+                    delta_section,
+                    re.MULTILINE,
+                )
+                if not match:
+                    continue
+                values = [float(v) for v in re.findall(number, match.group(1))]
+                if not values:
+                    continue
+                if len(values) >= 5:
+                    std_dev, std_err = values[2], values[4]
+                elif len(values) >= 3:
+                    std_dev, std_err = values[1], values[2]
+                elif len(values) == 2:
+                    std_dev, std_err = values[1], 0.0
+                else:
+                    std_dev, std_err = 0.0, 0.0
+                delta_components[f'Δ{comp}'] = {
+                    'value': values[0],
+                    'std_dev': std_dev,
+                    'std_err': std_err,
+                }
+
         # Alternative method: Look for FINAL RESULTS section
         if not delta_components:
             final_results_match = re.search(r'FINAL RESULTS:\s+\n([\s\S]+?)(?:\n\n|\Z)', content)
@@ -317,66 +325,83 @@ class MMPBSAParser:
         
         return binding_energy
     
+    # σ(ΔE_int) above which interaction entropy is unreliable (Duan et al. 2016;
+    # Sun et al. 2018 recommend ≲ 3.6 kcal/mol).
+    IE_SIGMA_LIMIT = 3.6
+
     def _extract_entropy(self, content: str) -> Dict:
-        """Extract entropy information from DAT file."""
+        """Extract interaction-entropy (IE) and C2 entropy results.
+
+        Values are −TΔS in kcal/mol, as printed by gmx_MMPBSA. Handles the
+        tabular layout of gmx_MMPBSA >= 1.5::
+
+            ENTROPY RESULTS (INTERACTION ENTROPY):
+            Model     σ(Int. Energy)    Average    SD    SEM
+            GB             2.13           2.18    0.06   0.01
+
+        and the older single-line summaries.
+        """
         entropy = {}
-        
-        # Interaction Entropy
-        ie_match = re.search(
-            r'ENTROPY RESULTS \(INTERACTION ENTROPY\):.+?(\d+\.\d+)\s+(\d+\.\d+)\s+(\d+\.\d+)\s+(\d+\.\d+)',
-            content,
-            re.DOTALL
-        )
-        if ie_match:
-            entropy['interaction_entropy'] = {
-                'sigma': float(ie_match.group(1)),
-                'value': float(ie_match.group(2)),
-                'std_dev': float(ie_match.group(3)),
-                'std_err': float(ie_match.group(4))
-            }
-        
-        # Alternative pattern for Interaction Entropy
-        if 'interaction_entropy' not in entropy:
-            ie_match = re.search(
-                r"INTERACTION ENTROPY\):[\s\S]*?gb\s+[\d.]+\s+([\d.-]+)",
-                content
+        number = r"-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?"
+
+        for key, header in (('interaction_entropy', 'INTERACTION ENTROPY'), ('c2_entropy', 'C2 ENTROPY')):
+            section = re.search(
+                rf"ENTROPY RESULTS \({header}\):\s*\n([\s\S]*?)(?:\n\s*\n|\Z)", content
             )
-            if ie_match:
-                entropy['interaction_entropy'] = {
-                    'value': float(ie_match.group(1)),
-                    'std_dev': 0.0,
-                    'std_err': 0.0
+            if not section:
+                continue
+            for line in section.group(1).splitlines():
+                line = line.strip()
+                if not line or line.startswith(('-', 'Model', 'Energy')):
+                    continue
+                parts = line.split()
+                model = parts[0] if parts and not re.fullmatch(number, parts[0]) else None
+                values = re.findall(number, line[len(model):] if model else line)
+                # C2 confidence interval "2.05-2.53" splits into two numbers; keep raw text too.
+                ci_match = re.search(rf"({number})\s*-\s*({number})\s*$", line) if key == 'c2_entropy' else None
+                if len(values) < 2:
+                    continue
+                entry = {
+                    'model': model,
+                    'sigma': float(values[0]),
+                    'value': float(values[1]),
+                    'std_dev': float(values[2]) if len(values) > 2 else 0.0,
                 }
-        
-        # C2 Entropy
-        c2_match = re.search(
-            r'ENTROPY RESULTS \(C2 ENTROPY\):.+?(\d+\.\d+)\s+(\d+\.\d+)\s+(\d+\.\d+)\s+([\d\.\-]+)',
-            content,
-            re.DOTALL
-        )
-        if c2_match:
-            entropy['c2_entropy'] = {
-                'sigma': float(c2_match.group(1)),
-                'value': float(c2_match.group(2)),
-                'std_dev': float(c2_match.group(3)),
-                'confidence_interval': c2_match.group(4)
-            }
-        
-        # Alternative pattern for C2 Entropy
-        if 'c2_entropy' not in entropy:
-            c2_match = re.search(
-                r"C2 ENTROPY\):[\s\S]*?gb\s+[\d.]+\s+([\d.-]+)",
-                content
-            )
-            if c2_match:
-                entropy['c2_entropy'] = {
-                    'value': float(c2_match.group(1)),
+                if key == 'interaction_entropy':
+                    entry['std_err'] = float(values[3]) if len(values) > 3 else 0.0
+                elif ci_match:
+                    entry['confidence_interval'] = f"{ci_match.group(1)}-{ci_match.group(2)}"
+                # The σ criterion is established for IE; C2 is reported without a verdict.
+                entry['reliable'] = entry['sigma'] <= self.IE_SIGMA_LIMIT if key == 'interaction_entropy' else None
+                entropy[key] = entry
+                break
+
+        # Older gmx_MMPBSA summaries: "... INTERACTION ENTROPY): ... gb  <sigma>  <value>"
+        for key, header in (('interaction_entropy', 'INTERACTION ENTROPY'), ('c2_entropy', 'C2 ENTROPY')):
+            if key in entropy:
+                continue
+            match = re.search(rf"{header}\):[\s\S]*?\b(?:gb|pb|GB|PB)\s+({number})\s+({number})", content)
+            if match:
+                sigma = float(match.group(1))
+                entropy[key] = {
+                    'model': None,
+                    'sigma': sigma,
+                    'value': float(match.group(2)),
                     'std_dev': 0.0,
-                    'std_err': 0.0
+                    'std_err': 0.0,
+                    'reliable': (sigma <= self.IE_SIGMA_LIMIT) if key == 'interaction_entropy' else None,
                 }
-        
+
         return entropy
-    
+
+    def extract_entropy_from_file(self, file_path: Path) -> Dict:
+        """Entropy terms from a gmx_MMPBSA DAT file (used alongside CSV results)."""
+        try:
+            return self._extract_entropy(Path(file_path).read_text(errors="replace"))
+        except OSError as exc:
+            logger.warning(f"Could not read entropy from {file_path}: {exc}")
+            return {}
+
     def _parse_dat_decomp(self, file_path: Path) -> Optional[pd.DataFrame]:
         """
         Parse DAT decomposition file (based on fixed_dat_file_parsing.py).

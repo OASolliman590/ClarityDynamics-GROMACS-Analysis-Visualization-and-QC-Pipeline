@@ -1,0 +1,507 @@
+"""Pipeline YAML template text written by ``generate_pipeline_template``."""
+
+PIPELINE_TEMPLATE = """# GROMACS Analysis Pipeline Template
+# ===================================
+
+project:
+  name: "demo_project"
+  protein_name: "ProteinX"
+
+paths:
+  data_root: "/path/to/project"
+  output_root: "./analysis_outputs"
+
+# Execution order (omit stages to skip)
+run: ["qc", "md", "mmpbsa", "pca"]
+
+qc:
+  enabled: true
+  base_dir: "./1-MD/analysis"
+  output_dir: "./analysis_outputs/qc"
+  topology: "./1-MD/analysis/HOLO_LigandA_1/step3_input.psf"
+  trajectories:
+    - "./1-MD/analysis/HOLO_LigandA_1/step5_production_noPBC.xtc"
+    - "./1-MD/analysis/HOLO_LigandA_2/step5_production_noPBC.xtc"
+    - "./1-MD/analysis/HOLO_LigandA_3/step5_production_noPBC.xtc"
+  expected_replicates: 3
+  # Optional index/group sanity
+  # index_file: "./1-MD/analysis/HOLO_LigandA_1/new_index.ndx"
+  # expected_groups: ["Protein", "UNK", "core_no_terminals_Calpha"]
+  protein_selection: "protein"
+  ligand_selection: "resname UNK"
+  sample_stride: 10
+  max_frames: 500
+  fail_on_error: false
+
+md:
+  enabled: true
+  base_dir: "./1-MD/analysis"
+  output_dir: "./analysis_outputs/md"
+  time_unit_input: "auto"  # auto|frame|ps|ns
+  time_unit_output: "ns"   # auto|frame|ps|ns
+  # time_step_ps: 2.0       # required when converting from frame
+  # time_scale: 0.001       # optional explicit multiplier override
+  smoothing_window: 1       # set >1 to apply centered rolling smoothing
+  outlier_threshold: null   # optional |z| threshold to mask artefacts; null disables (recommended)
+  # Several ligands in ONE complex (e.g. inhibitor + cofactor): ligand RMSD and COM-COM
+  # become one metric/plot per ligand (files RMSD_<name>.dat, comcom_<name>.dat).
+  # ligands: ["INH", "NAD"]
+  rmsf_terminals:            # flexible termini drawn faded between two dashed boundary lines
+    enabled: true
+    mad_multiplier: 3.0
+    smoothing_window: 3
+    stable_run: 3
+    max_terminal_fraction: 0.25
+  convert_units: true        # .xvg values declared in nm / nm^2 are converted to the axis unit (Å / Å^2)
+  stability:                 # equilibration detection; trims time series, writes data/equilibration.json
+    enabled: false
+    method: "chodera"        # chodera (max effective sample size) | window (legacy std/slope rule)
+    metric: "rmsd_prot"
+  systems:
+    - name: "LigandA"
+      dir_pattern: "HOLO_LigandA_{}"
+      is_apo: false
+      replicates: 3
+    - name: "APO"
+      dir_pattern: "APO_{}"
+      is_apo: true
+      replicates: 3
+  # Optional RMSF labels
+  # amino_acids:
+  #   sequence: "MKT..."       # 1-letter sequence
+  #   sequence_start: 814      # add residue numbers to labels
+  #   # or labels: ["ALA814", "GLY815", "SER816"]
+
+# Batch holo vs apo (auto-loop, one output per holo system)
+md_batch:
+  enabled: false
+  base_dir: "./1-MD/analysis"
+  output_dir: "./analysis_outputs/md_batch"
+  replicates: 3
+  apo_system:
+    name: "APO"
+    dir_pattern: "APO_{}"
+  holo_systems:
+    - name: "LigandA"
+      dir_pattern: "HOLO_LigandA_{}"
+    - name: "LigandB"
+      dir_pattern: "HOLO_LigandB_{}"
+  # dir_names example (override dir_pattern):
+  # holo_systems:
+  #   - name: "LigandA"
+  #     dir_names: ["HOLO_LigandA_1", "HOLO_LigandA_2", "HOLO_LigandA_3"]
+  output_subdir_pattern: "output_{name}"
+
+# Cross-ligand comparison (overlay all holo systems in one run)
+md_compare:
+  enabled: false
+  from_md_batch: true
+  include_apo: false
+  output_dir: "./analysis_outputs/md_compare"
+  # Optional: override plot config/palette
+  # plot_config:
+  #   style: "comparative"
+  # palette:
+  #   - [31, 119, 180]
+  #   - [255, 127, 14]
+
+mmpbsa:
+  enabled: true
+  base_dir: "./3-Results_Holo"
+  output_dir: "./analysis_outputs/mmpbsa"
+  protein_name: "ProteinX"
+  ligand_name: "LigandA"
+  compare_systems: false
+  compare_binding_key: "TOTAL"
+  compare_components: false
+  incomplete_replicates_policy: "warn"  # ignore|warn|error
+  # start_frame: 251          # drop earlier frames from frame-level (CSV) results; see md/data/equilibration.json
+  require_decomp_replicates: false
+  # compare_component_order: ["ΔVDWAALS", "ΔEEL", "ΔEGB", "ΔESURF", "ΔGGAS", "ΔGSOLV"]
+  systems:
+    - name: "LigandA"
+      dir_pattern: "HOLO_{}"
+      replicates: 3
+
+pca:
+  enabled: false
+  base_dir: "./2-PCA"
+  output_dir: "./analysis_outputs/pca"
+  n_pcs: 10
+  # Optional: run GROMACS PCA generation before plotting.
+  # run_gromacs:
+  #   enabled: true
+  #   input_dir: "./1-MD/analysis/HOLO_LigandA_1"
+  #   gmx: "gmx"
+  #   tpr: "step5_production.tpr"
+  #   trajectory: "step5_production.xtc"
+  #   index: "new_index.ndx"
+  #   protein_group: "Protein"
+  #   output_group: "System"
+  #   terminal_detection:
+  #     rmsf_file: "RMSF_.dat"
+  #     gro_file: "step3_input.gro"
+  #     pdb_file: "step3_input.pdb"
+  #     # core_residue_range: [9, 289]
+  #   window_cosine:
+  #     enabled: true
+  #     max_ns: 100
+  #     step_ns: 10
+  # FEL (requires gmx sham outputs in PCA folder)
+  # fel:
+  #   enabled: true
+  #   pairs: ["12", "13", "23"]
+  #   contours: 7
+  #   step: 2
+  #   colorscale: "Viridis"
+  #   overlay_projection: true
+  #   include_probability: true
+  #   include_entropy: false
+  #   include_enthalpy: false
+  # Clustering in PCA space
+  # clustering:
+  #   enabled: true
+  #   method: "kmeans"
+  #   pair: "12"
+  #   n_clusters: 3
+  #   downsample: 1
+  #   max_points: 5000
+
+# Distance analysis (ligand-protein residue distances)
+distance:
+  enabled: false
+  base_dir: "./1-MD/analysis"
+  output_dir: "./analysis_outputs/distance"
+  protein_name: "ProteinX"
+  ligand_name: "LigandA"
+  topology: "./1-MD/analysis/HOLO_LigandA_1/step3_input.psf"
+  trajectories:
+    - "./1-MD/analysis/HOLO_LigandA_1/step5_production_noPBC.xtc"
+    - "./1-MD/analysis/HOLO_LigandA_2/step5_production_noPBC.xtc"
+    - "./1-MD/analysis/HOLO_LigandA_3/step5_production_noPBC.xtc"
+  # Optional auto-detect of pocket residues
+  # residues:
+  #   auto: true
+  #   cutoff: 5.0  # in output units (e.g., Å)
+  #   selection: "protein"
+  residues:
+    range: [814, 937]
+  ligand_selection: "resname UNK"
+  method: "com"  # com or min
+  combined_plot: true
+  per_residue_plots: true
+
+# PCA batch (one output per PCA directory)
+pca_batch:
+  enabled: false
+  base_dir: "./2-PCA"
+  output_dir: "./analysis_outputs/pca_batch"
+  # Optional shared automatic GROMACS settings for all systems.
+  # run_gromacs:
+  #   enabled: true
+  #   gmx: "gmx"
+  systems:
+    - name: "LigandA"
+      dir_name: "LigandA_PCA"
+      # simulation_dir: "../1-MD/analysis/HOLO_LigandA_1"
+      # pca_dir: "LigandA_PCA"
+    - name: "LigandB"
+      dir_name: "LigandB_PCA"
+  output_subdir_pattern: "output_{name}"
+
+# Joint PCA: all systems fitted together and projected on ONE set of eigenvectors,
+# with RMSIP subspace overlap between systems (quantitative cross-system comparison).
+pca_joint:
+  enabled: false
+  base_dir: "./1-MD/analysis"
+  output_dir: "./analysis_outputs/pca_joint"
+  selection: "protein and name CA"   # must select the same atoms in every system
+  n_components: 10
+  n_overlap: 10
+  stride: 10
+  # max_frames_per_system: 2000
+  auto_discover:
+    pattern: "HOLO_{ligand}_{rep}"
+    topology: "step3_input.psf"
+    trajectory: "step5_production_noPBC.xtc"
+  systems:
+    - name: "APO"
+      is_apo: true
+      topology: "./1-MD/analysis/APO_1/step3_input.psf"
+      trajectories:
+        - "./1-MD/analysis/APO_1/step5_production_noPBC.xtc"
+
+# Cross-ligand PCA comparison
+pca_compare:
+  enabled: false
+  from_pca_batch: true
+  output_dir: "./analysis_outputs/pca_compare"
+  compare_pairs: ["12", "13", "23"]
+  compare_scree: true
+  compare_cosine: false
+  # downsample: 5
+  # max_points: 5000
+
+# Distance batch (one output per system)
+distance_batch:
+  enabled: false
+  base_dir: "./1-MD/analysis"
+  output_dir: "./analysis_outputs/distance_batch"
+  protein_name: "ProteinX"
+  ligand_selection: "resname UNK"
+  method: "com"
+  # Optional auto-detect of pocket residues
+  # residues:
+  #   auto: true
+  #   cutoff: 5.0  # in output units (e.g., Å)
+  #   selection: "protein"
+  residues:
+    range: [814, 937]
+  systems:
+    - name: "LigandA"
+      topology: "./1-MD/analysis/HOLO_LigandA_1/step3_input.psf"
+      trajectories:
+        - "./1-MD/analysis/HOLO_LigandA_1/step5_production_noPBC.xtc"
+        - "./1-MD/analysis/HOLO_LigandA_2/step5_production_noPBC.xtc"
+        - "./1-MD/analysis/HOLO_LigandA_3/step5_production_noPBC.xtc"
+    - name: "LigandB"
+      topology: "./1-MD/analysis/HOLO_LigandB_1/step3_input.psf"
+      trajectories:
+        - "./1-MD/analysis/HOLO_LigandB_1/step5_production_noPBC.xtc"
+        - "./1-MD/analysis/HOLO_LigandB_2/step5_production_noPBC.xtc"
+        - "./1-MD/analysis/HOLO_LigandB_3/step5_production_noPBC.xtc"
+  output_subdir_pattern: "output_{name}"
+
+# Cross-ligand distance comparison
+distance_compare:
+  enabled: false
+  from_distance_batch: true
+  output_dir: "./analysis_outputs/distance_compare"
+  compare_mode: "intersection"  # intersection or union
+  show_std: false
+  include_overall: false
+  heatmap_enabled: true
+  heatmap_downsample: 2
+  # heatmap_max_frames: 5000
+  delta_enabled: true
+  # delta_reference: "LigandA"
+
+# Interaction fingerprint analysis
+interactions:
+  enabled: false
+  base_dir: "./1-MD/analysis"
+  output_dir: "./analysis_outputs/interactions"
+  protein_name: "ProteinX"
+  ligand_name: "LigandA"
+  topology: "./1-MD/analysis/HOLO_LigandA_1/step3_input.psf"
+  trajectories:
+    - "./1-MD/analysis/HOLO_LigandA_1/step5_production_noPBC.xtc"
+    - "./1-MD/analysis/HOLO_LigandA_2/step5_production_noPBC.xtc"
+    - "./1-MD/analysis/HOLO_LigandA_3/step5_production_noPBC.xtc"
+  ligand_selection: "resname UNK"
+  interaction_types: ["hbond", "salt_bridge", "hydrophobic", "pi_stacking"]
+  stride: 1
+  # ligand_ring_sel: "resname UNK and name C*"
+
+# Interaction batch (per ligand)
+interactions_batch:
+  enabled: false
+  base_dir: "./1-MD/analysis"
+  output_dir: "./analysis_outputs/interactions_batch"
+  systems:
+    - name: "LigandA"
+      ligand_name: "LigandA"
+      topology: "./1-MD/analysis/HOLO_LigandA_1/step3_input.psf"
+      trajectories:
+        - "./1-MD/analysis/HOLO_LigandA_1/step5_production_noPBC.xtc"
+    - name: "LigandB"
+      ligand_name: "LigandB"
+      topology: "./1-MD/analysis/HOLO_LigandB_1/step3_input.psf"
+      trajectories:
+        - "./1-MD/analysis/HOLO_LigandB_1/step5_production_noPBC.xtc"
+  output_subdir_pattern: "output_{name}"
+
+# Cross-ligand interaction comparison
+interactions_compare:
+  enabled: false
+  from_interactions_batch: true
+  output_dir: "./analysis_outputs/interactions_compare"
+  compare_mode: "intersection"
+
+# ProLIF fingerprint analysis
+prolif:
+  enabled: false
+  base_dir: "./1-MD/analysis"
+  output_dir: "./analysis_outputs/prolif"
+  protein_name: "ProteinX"
+  ligand_name: "LigandA"
+  topology: "./1-MD/analysis/HOLO_LigandA_1/step3_input.psf"
+  trajectories:
+    - "./1-MD/analysis/HOLO_LigandA_1/step5_production_noPBC.xtc"
+    - "./1-MD/analysis/HOLO_LigandA_2/step5_production_noPBC.xtc"
+    - "./1-MD/analysis/HOLO_LigandA_3/step5_production_noPBC.xtc"
+  ligand_selection: "resname UNK"
+  protein_selection: "protein"
+  interaction_types: ["HBAcceptor", "HBDonor", "Hydrophobic", "PiStacking", "VdWContact"]
+  vicinity_cutoff: 5.0
+  stride: 10
+  outputs: ["barcode", "lignetwork", "occupancy", "tanimoto"]
+  lignetwork_display_all: true
+  lignetwork_count_aware: true
+  barcode_config:
+    n_frame_ticks: 10
+    residues_tick_location: "top"
+    xlabel: "Frame"
+    figsize: [12, 4]
+    dpi: 150
+    only_interacting_residues: true
+    min_interaction_frames: 1
+    # max_residues: 40
+
+# ProLIF batch (per ligand)
+prolif_batch:
+  enabled: false
+  base_dir: "./1-MD/analysis"
+  output_dir: "./analysis_outputs/prolif_batch"
+  # Automatic per-ligand discovery: every directory matching the pattern is grouped by
+  # {ligand}; {rep} directories become replicates. Explicit systems below override matches.
+  auto_discover:
+    pattern: "HOLO_{ligand}_{rep}"
+    topology: "step3_input.psf"
+    trajectory: "step5_production_noPBC.xtc"
+    # include: ["LigandA", "LigandB"]
+    # exclude: ["LigandC"]
+  # ligands: auto              # detect every non-protein/solvent/ion residue -> one run per ligand
+  # ligand_exclude: ["NAD"]    # with ligands: auto
+  lignetwork_kind: "aggregate" # interactions present in >= lignetwork_threshold of frames
+  lignetwork_threshold: 0.3
+  occupancy_top_n: 25
+  systems:
+    - name: "LigandA"
+      ligand_name: "LigandA"
+      topology: "./1-MD/analysis/HOLO_LigandA_1/step3_input.psf"
+      trajectories:
+        - "./1-MD/analysis/HOLO_LigandA_1/step5_production_noPBC.xtc"
+    - name: "LigandB"
+      ligand_name: "LigandB"
+      topology: "./1-MD/analysis/HOLO_LigandB_1/step3_input.psf"
+      trajectories:
+        - "./1-MD/analysis/HOLO_LigandB_1/step5_production_noPBC.xtc"
+  output_subdir_pattern: "output_{name}"
+
+# Cross-ligand ProLIF comparison
+prolif_compare:
+  enabled: false
+  from_prolif_batch: true
+  output_dir: "./analysis_outputs/prolif_compare"
+  compare_mode: "intersection"
+
+# TTClust trajectory clustering
+ttclust:
+  enabled: false
+  base_dir: "./1-MD/analysis"
+  output_dir: "./analysis_outputs/ttclust"
+  protein_name: "ProteinX"
+  system_name: "LigandA"
+  topology: "./1-MD/analysis/HOLO_LigandA_1/step3_input.psf"
+  trajectories:
+    - "./1-MD/analysis/HOLO_LigandA_1/step5_production_noPBC.xtc"
+    - "./1-MD/analysis/HOLO_LigandA_2/step5_production_noPBC.xtc"
+    - "./1-MD/analysis/HOLO_LigandA_3/step5_production_noPBC.xtc"
+  # executable: "ttclust.py"   # optional, auto-detected if omitted
+  stride: 10
+  logfile: "clustering.log"
+  select_traj: "all"
+  select_alignment: "backbone"
+  select_rmsd: "backbone"
+  method: "ward"
+  autoclust: true
+  interactive_matrix: false
+  # cutoff: 2.75
+  # n_groups: "auto"           # or integer as string/number
+  # axis: "frame"
+  # limit_matrix: 100000000
+  # extra_args: ["-some_flag", "value"]
+  # environment:
+  #   NUMBA_DISABLE_JIT: "1"
+
+# TTClust batch (per system)
+ttclust_batch:
+  enabled: false
+  base_dir: "./1-MD/analysis"
+  output_dir: "./analysis_outputs/ttclust_batch"
+  auto_discover:
+    pattern: "HOLO_{ligand}_{rep}"
+    topology: "step3_input.psf"
+    trajectory: "step5_production_noPBC.xtc"
+  stride: 10
+  logfile: "clustering.log"
+  select_traj: "all"
+  select_alignment: "backbone"
+  select_rmsd: "backbone"
+  method: "ward"
+  autoclust: true
+  interactive_matrix: false
+  systems:
+    - name: "LigandA"
+      system_name: "LigandA"
+      topology: "./1-MD/analysis/HOLO_LigandA_1/step3_input.psf"
+      trajectories:
+        - "./1-MD/analysis/HOLO_LigandA_1/step5_production_noPBC.xtc"
+    - name: "LigandB"
+      system_name: "LigandB"
+      topology: "./1-MD/analysis/HOLO_LigandB_1/step3_input.psf"
+      trajectories:
+        - "./1-MD/analysis/HOLO_LigandB_1/step5_production_noPBC.xtc"
+  output_subdir_pattern: "output_{name}"
+
+# Ranking table across ligands
+ranking:
+  enabled: false
+  output_dir: "./analysis_outputs/ranking"
+  n_bootstrap: 2000          # rank probabilities and pairwise P(A better than B); 0 disables
+  seed: 0
+  # exclude_systems: ["Reference"]   # APO systems of the md stages and "APO" are always excluded
+  # md_stats_file: "./analysis_outputs/md_compare/statistics_summary.csv"
+  # mmpbsa_data_dir: "./analysis_outputs/mmpbsa/data"
+  # distance_summary_file: "./analysis_outputs/distance_compare/data/distance_compare_summary.csv"
+
+# Utility tasks (optional)
+utils:
+  enabled: false
+  output_dir: "./analysis_outputs/utils"
+  tasks:
+    - type: "examine_csv"
+      files:
+        - "/path/to/FINAL_RESULTS_MMPBSA.csv"
+        - "/path/to/FINAL_DECOMP_MMPBSA.csv"
+    - type: "convert_dat"
+      file_type: "results"   # or "decomp"
+      inputs:
+        - "/path/to/FINAL_RESULTS_MMPBSA.dat"
+    - type: "renumber_gro"
+      input_file: "/path/to/step3_input.gro"
+      start_residue: 679
+    - type: "modevectors"
+      first_obj: "/path/to/ref.pdb"
+      last_obj: "/path/to/extreme.pdb"
+      pml_name: "modevectors.pml"
+    - type: "generate_upstream_scripts"
+      outputs: ["md_vmd", "mmpbsa", "pca"]
+      topology: "step3_input.psf"
+      trajectory: "step5_production_noPBC.xtc"
+      groups: [21, 17]
+    - type: "duivy_inspect_guide"
+      xvg_files:
+        - "/path/to/RMSD_.xvg"
+        - "/path/to/cc_all.xvg"
+      xpm_files:
+        - "/path/to/gibbs_12.xpm"
+      # output_file: "./analysis_outputs/utils/duivy_inspection_guide.md"
+
+# Optional: point to existing module YAMLs instead of inline configs
+# md:
+#   enabled: true
+#   config_file: "./configs/md.yaml"
+#   output_dir: "./analysis_outputs/md"
+"""

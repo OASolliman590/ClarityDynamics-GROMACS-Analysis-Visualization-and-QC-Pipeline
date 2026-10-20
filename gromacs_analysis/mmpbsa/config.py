@@ -68,6 +68,9 @@ class MMPBSAConfig:
     compare_component_order: Optional[List[str]] = None
     incomplete_replicates_policy: str = "warn"  # ignore | warn | error
     require_decomp_replicates: bool = False
+    # Exclude frames before this "Frame #" (e.g. the equilibration start from md/data/equilibration.json).
+    # Applies to frame-level (CSV) results; DAT summaries cannot be re-averaged and are left unchanged.
+    start_frame: Optional[int] = None
     
     def __post_init__(self):
         """Validate configuration"""

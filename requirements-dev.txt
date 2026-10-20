@@ -5,6 +5,7 @@
 pytest>=6.0
 pytest-cov>=2.0
 pytest-mock>=3.6.0
+MDAnalysis>=2.0.0        # trajectory tests (end-to-end, distance, joint PCA)
 
 # Code quality
 black>=21.0

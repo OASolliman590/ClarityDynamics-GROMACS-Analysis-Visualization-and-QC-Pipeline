@@ -216,7 +216,14 @@ def robust_threshold(values: Sequence[float], multiplier: float) -> Tuple[float,
     raw_mad = statistics.median(deviations)
     mad = raw_mad * 1.4826
     if mad == 0:
-        mad = statistics.pstdev(values) if len(values) > 1 else 0.0
+        # Flat core: the standard deviation would be inflated by the very terminal
+        # outliers we want to detect, so fall back to robust scales instead.
+        ordered = sorted(values)
+        n = len(ordered)
+        iqr = ordered[(3 * (n - 1)) // 4] - ordered[(n - 1) // 4] if n > 1 else 0.0
+        mad = 0.7413 * iqr
+        if mad == 0:
+            mad = max(0.05 * abs(median), 1e-6)
     threshold = median + multiplier * mad
     return threshold, median, mad
 

@@ -133,7 +133,7 @@ def load_yaml_config(yaml_path: Path) -> PCAConfig:
             pairs=fel_data.get('pairs', ["12"]),
             contours=fel_data.get('contours', 7),
             step=fel_data.get('step', 2),
-            colorscale=fel_data.get('colorscale', 'jet'),
+            colorscale=fel_data.get('colorscale', 'Viridis'),
             overlay_projection=fel_data.get('overlay_projection', True),
             include_probability=fel_data.get('include_probability', False),
             include_entropy=fel_data.get('include_entropy', False),
@@ -251,7 +251,7 @@ plot_config:
 #   pairs: ["12", "13", "23"]      # PC pairs to plot
 #   contours: 7
 #   step: 2                        # Downsample overlay points
-#   colorscale: "jet"
+#   colorscale: "Viridis"
 #   overlay_projection: true
 #   include_probability: true
 #   include_entropy: false

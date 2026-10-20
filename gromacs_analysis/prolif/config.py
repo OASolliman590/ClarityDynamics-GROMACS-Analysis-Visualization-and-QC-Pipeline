@@ -38,6 +38,10 @@ class ProlifConfig:
     ])
     lignetwork_display_all: bool = True
     lignetwork_count_aware: bool = True
+    # "aggregate": interactions present in >= lignetwork_threshold of frames; "frame": first frame only.
+    lignetwork_kind: str = "aggregate"
+    lignetwork_threshold: float = 0.3
+    occupancy_top_n: int = 25
     barcode_n_frame_ticks: int = 10
     barcode_residues_tick_location: str = "top"
     barcode_xlabel: str = "Frame"
@@ -74,6 +78,10 @@ class ProlifConfig:
             raise ValueError("ProlifConfig.barcode_max_residues must be >= 1 when provided")
         if self.barcode_residues_tick_location not in {"top", "bottom"}:
             raise ValueError("ProlifConfig.barcode_residues_tick_location must be 'top' or 'bottom'")
+        if self.lignetwork_kind not in {"aggregate", "frame"}:
+            raise ValueError("ProlifConfig.lignetwork_kind must be 'aggregate' or 'frame'")
+        if not 0.0 <= float(self.lignetwork_threshold) <= 1.0:
+            raise ValueError("ProlifConfig.lignetwork_threshold must be between 0 and 1")
         if len(self.barcode_figsize) != 2:
             raise ValueError("ProlifConfig.barcode_figsize must contain exactly 2 values")
 

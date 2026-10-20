@@ -13,6 +13,7 @@ Workflow:
 5. Generate summary report
 """
 
+import json
 import logging
 from pathlib import Path
 from typing import Dict, Optional, List
@@ -107,6 +108,9 @@ class MDAnalyzer:
         data_exports = self._export_metric_data_csv(all_data)
         logger.info(f"  Exported {len(data_exports)} data file(s)")
 
+        if self.config.stability.enabled:
+            self._write_equilibration(self.processor.equilibration_records)
+
         # Step 5: Save statistics
         logger.info("\n[5/6] Saving statistics...")
         statistics_file = self._save_statistics_csv(all_data)
@@ -152,6 +156,21 @@ class MDAnalyzer:
         logger.debug(f"  Output directory: {self.config.output_dir}")
         logger.debug(f"  Plots directory: {self.config.output_dir / 'plots'}")
     
+    def _write_equilibration(self, records: List[Dict]) -> Optional[Path]:
+        """Per-system production start (time, index, N_eff) for reuse by RMSF/MM/PBSA."""
+        path = self.config.output_dir / "data" / "equilibration.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(records, indent=2) + "\n")
+        for record in records:
+            if record.get("status") == "detected":
+                logger.info(
+                    "  %s: production starts at %s %s (index %s, N_eff=%s)",
+                    record["system"], record["start_time"], record.get("time_unit") or "",
+                    record["start_index"],
+                    f"{record['n_effective']:.0f}" if record.get("n_effective") else "n/a",
+                )
+        return path
+
     def _save_statistics_csv(self, all_data: Dict) -> Optional[Path]:
         """
         Save comprehensive statistics to CSV.
@@ -200,7 +219,23 @@ class MDAnalyzer:
                     row['N_Replicates'] = metric_data['n_replicates']
                 if 'std_mean' in stats:
                     row['Std_Mean'] = stats['std_mean']
-                
+                # Uncertainty of the mean: between-replicate SEM for replicates,
+                # block-averaged SEM (autocorrelation-aware) for single runs.
+                rep_means = stats.get('replicate_means')
+                row['Replicate_Means'] = (
+                    ";".join(f"{float(v):.6g}" for v in rep_means) if rep_means else None
+                )
+                row['SEM'] = stats.get('sem')
+                row['SEM_Method'] = stats.get('sem_method')
+                row['Between_Replicate_SD'] = stats.get('between_replicate_sd')
+                row['N_Effective'] = stats.get('n_effective')
+                row['Stable_Start_Time'] = metric_data.get('stable_start_time')
+                unit_meta = metric_data.get('unit_metadata') or {}
+                row['Value_Unit_Declared'] = unit_meta.get('declared')
+                row['Value_Unit'] = unit_meta.get('display')
+                row['Value_Unit_Factor'] = unit_meta.get('factor')
+                row['Value_Unit_Status'] = unit_meta.get('status')
+
                 rows.append(row)
         
         if not rows:
@@ -361,19 +396,28 @@ class MDAnalyzer:
                 
                 # Statistics Summary
                 f.write("## Statistics Summary\n\n")
-                f.write("| System | Metric | Mean | Std | Min | Max |\n")
-                f.write("|--------|--------|------|-----|-----|-----|\n")
-                
+                f.write("| System | Metric | Mean | SEM | Std | Min | Max |\n")
+                f.write("|--------|--------|------|-----|-----|-----|-----|\n")
+
                 for system_name, system_data in all_data.items():
                     for metric_name, metric_data in system_data.items():
                         stats = metric_data.get('stats', {})
+                        sem = stats.get('sem')
+                        sem_text = f"{sem:.3f}" if sem is not None else "n/a"
                         f.write(f"| {system_name} | {metric_name} | "
                                f"{stats.get('mean', 0):.3f} | "
+                               f"{sem_text} | "
                                f"{stats.get('std', 0):.3f} | "
                                f"{stats.get('min', 0):.3f} | "
                                f"{stats.get('max', 0):.3f} |\n")
-                
+
                 f.write("\n")
+                f.write(
+                    "Std is the spread of the observable over frames (pooled over replicates). "
+                    "SEM is the uncertainty of the mean: between-replicate SD/sqrt(n) when "
+                    "replicates exist, otherwise a block-averaged estimate that accounts for "
+                    "frame-to-frame correlation. Compare systems using SEM, not Std.\n\n"
+                )
                 
                 # Footer
                 f.write("---\n\n")

@@ -14,6 +14,8 @@ import plotly.graph_objects as go
 from .config import ProlifConfig, ProlifCompareConfig
 from .processor import ProlifProcessor
 from .plotter import ProlifPlotter
+from ..utils.figure_export import scaled_height, scaled_width
+from ..utils.palette import OCCUPANCY_SCALE, categorical
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +67,8 @@ class ProlifAnalyzer:
 
         summary_occ = self._summarize_replicate_occupancy(replicate_occ)
         summary_occ.to_csv(data_dir / "occupancy_summary.csv", index=False)
+        if "occupancy" in self.config.outputs:
+            self._save_occupancy_figures(summary_occ, plots_dir)
 
         # Backward-compatible occupancy output, now with mean/SD/replicate columns.
         summary_occ.rename(
@@ -83,15 +87,25 @@ class ProlifAnalyzer:
         if "lignetwork" in self.config.outputs:
             try:
                 fp_for_lignetwork = first_rep.get("fingerprint_count") or first_fp
-                fig = fp_for_lignetwork.plot_lignetwork(
-                    first_rep["ligand_mol"],
-                    kind="frame",
-                    frame=0,
-                    display_all=self.config.lignetwork_display_all,
-                )
+                if self.config.lignetwork_kind == "frame":
+                    fig = fp_for_lignetwork.plot_lignetwork(
+                        first_rep["ligand_mol"],
+                        kind="frame",
+                        frame=0,
+                        display_all=self.config.lignetwork_display_all,
+                    )
+                else:
+                    # Interactions present in >= threshold of frames, not just one snapshot.
+                    fig = fp_for_lignetwork.plot_lignetwork(
+                        first_rep["ligand_mol"],
+                        kind="aggregate",
+                        threshold=self.config.lignetwork_threshold,
+                        display_all=self.config.lignetwork_display_all,
+                    )
                 self._save_plot(fig, plots_dir, "lignetwork")
             except Exception as exc:
-                logger.warning(f"Failed to generate lignetwork plot: {exc}")
+                hint = " (install IPython: pip install ipython)" if "IPython" in str(exc) else ""
+                logger.warning(f"Failed to generate lignetwork plot: {exc}{hint}")
 
         if "tanimoto" in self.config.outputs:
             self._save_tanimoto(first_fp, first_df, plots_dir)
@@ -176,7 +190,7 @@ class ProlifAnalyzer:
             )
         out = (
             occupancy_df
-            .groupby(["Interaction", "Residue"], as_index=False)["Occupancy"]
+            .groupby(["Interaction", "Residue"])["Occupancy"]
             .agg(["mean", "std", "count"])
             .reset_index()
             .rename(
@@ -208,6 +222,10 @@ class ProlifAnalyzer:
         pd.DataFrame(chemistry_rows).to_csv(path, index=False)
 
     def _parse_column(self, col, interactions_lower: Dict[str, str]) -> Tuple[str, str]:
+        # ProLIF columns are (ligand residue, protein residue, interaction).
+        if isinstance(col, tuple) and len(col) >= 3:
+            interaction = str(col[-1])
+            return interactions_lower.get(interaction.lower(), interaction), str(col[1])
         items = list(col) if isinstance(col, tuple) else [col]
 
         interaction = None
@@ -234,16 +252,88 @@ class ProlifAnalyzer:
     def _looks_like_residue(label: str) -> bool:
         if "." in label:
             label = label.split(".")[0]
-        return bool(re.match(r"^[A-Z]{1,3}\\d+", label))
+        return bool(re.match(r"^[A-Z0-9]{1,4}?-?\d+", label))
 
-    def _barcode_plot_kwargs(self) -> Dict:
+    def _barcode_plot_kwargs(self, n_rows: int = 0) -> Dict:
+        width, height = self.config.barcode_figsize
+        # Give every interaction row ~0.22 in so residue labels never overlap.
+        height = max(height, 1.5 + 0.22 * n_rows)
         return {
             "n_frame_ticks": self.config.barcode_n_frame_ticks,
             "residues_tick_location": self.config.barcode_residues_tick_location,
             "xlabel": self.config.barcode_xlabel,
-            "figsize": self.config.barcode_figsize,
+            "figsize": (width, min(height, 60.0)),
             "dpi": self.config.barcode_dpi,
         }
+
+    def _save_occupancy_figures(self, summary: pd.DataFrame, plots_dir: Path) -> None:
+        """Residue x interaction occupancy heatmap and top-residue bar chart (mean ± SD over replicates)."""
+        if summary.empty:
+            return
+        name = f"{self.config.protein_name} · {self.config.ligand_name}"
+        font = self.config.plot_config.font_size
+
+        table = summary.pivot_table(index="Residue", columns="Interaction", values="OccupancyMean", aggfunc="max")
+        sd = summary.pivot_table(index="Residue", columns="Interaction", values="OccupancySD", aggfunc="max")
+        order = table.max(axis=1).sort_values(ascending=False).index
+        table, sd = table.loc[order].fillna(0.0), sd.reindex(index=order, columns=table.columns).fillna(0.0)
+
+        heat = go.Figure(go.Heatmap(
+            z=table.values,
+            x=list(table.columns),
+            y=list(table.index),
+            customdata=sd.values,
+            zmin=0,
+            zmax=100,
+            colorscale=OCCUPANCY_SCALE,
+            xgap=2,
+            ygap=2,
+            colorbar=dict(title="Occupancy (%)"),
+            hovertemplate="%{y} · %{x}<br>%{z:.1f} ± %{customdata:.1f} %<extra></extra>",
+        ))
+        heat.update_yaxes(autorange="reversed")
+        heat.update_layout(
+            title=f"{name} · interaction occupancy",
+            xaxis_title="Interaction",
+            yaxis_title="Residue",
+            template=self.config.plot_config.template,
+            font_family=self.config.plot_config.font_family,
+            font_size=font,
+            width=scaled_width(len(table.columns), per_col=110, base=360, minimum=700, maximum=2200),
+            height=scaled_height(len(table.index), per_row=max(22, font + 6)),
+            margin=dict(l=140, r=40, t=90, b=90),
+        )
+        self.plotter.save_figure(heat, plots_dir, "occupancy_heatmap")
+
+        per_residue = (
+            summary.sort_values("OccupancyMean", ascending=False)
+            .drop_duplicates("Residue")
+            .head(self.config.occupancy_top_n)
+            .iloc[::-1]
+        )
+        bars = go.Figure(go.Bar(
+            x=per_residue["OccupancyMean"],
+            y=per_residue["Residue"],
+            orientation="h",
+            error_x=dict(type="data", array=per_residue["OccupancySD"], visible=True, thickness=1.5,
+                         color="rgba(0,0,0,0.45)"),
+            marker=dict(color=categorical(0), line=dict(color="white", width=2)),
+            customdata=per_residue["Interaction"],
+            hovertemplate="%{y}: %{x:.1f}% (strongest: %{customdata})<extra></extra>",
+        ))
+        bars.update_layout(
+            title=f"{name} · top {len(per_residue)} interacting residues",
+            xaxis=dict(title="Occupancy (% of frames, mean ± SD over replicates)", range=[0, 110]),
+            yaxis_title="Residue",
+            template=self.config.plot_config.template,
+            font_family=self.config.plot_config.font_family,
+            font_size=font,
+            width=max(900, self.config.plot_config.width),
+            height=scaled_height(len(per_residue), per_row=max(24, font + 8)),
+            margin=dict(l=140, r=60, t=90, b=90),
+            showlegend=False,
+        )
+        self.plotter.save_figure(bars, plots_dir, "occupancy_top_residues")
 
     def _save_barcode_outputs(
         self,
@@ -254,7 +344,7 @@ class ProlifAnalyzer:
         data_dir: Path,
     ) -> None:
         # 1) Keep the native ProLIF barcode as static figure for compatibility.
-        barcode_fig = fp.plot_barcode(**self._barcode_plot_kwargs())
+        barcode_fig = fp.plot_barcode(**self._barcode_plot_kwargs(len(rep_df.columns)))
         self.plotter.save_figure(barcode_fig, plots_dir, f"barcode_rep{rep_idx}", formats=["svg"])
 
         # 2) Generate readable interactive barcode HTML with residue-level filtering.
@@ -375,6 +465,8 @@ class ProlifAnalyzer:
         return fig
 
     def _extract_protein_residue_from_column(self, col) -> str:
+        if isinstance(col, tuple) and len(col) >= 3:
+            return str(col[1]).split(".")[0]
         if isinstance(col, tuple):
             for item in col:
                 label = str(item)
@@ -450,9 +542,17 @@ class ProlifComparisonAnalyzer:
                 residues,
                 ligands,
                 title=f"{self.config.protein_name} · ProLIF {interaction} occupancy",
-                colorscale="Viridis",
+                colorscale=OCCUPANCY_SCALE,
                 zmin=0,
                 zmax=100,
+            )
+            fig.update_traces(xgap=2, ygap=2, colorbar=dict(title="Occupancy (%)"),
+                              hovertemplate="%{y} · %{x}<br>%{z:.1f} %<extra></extra>")
+            fig.update_layout(
+                width=scaled_width(len(residues), per_col=34, base=320),
+                height=scaled_height(len(ligands), per_row=48, base=260, minimum=380),
+                xaxis=dict(tickangle=-60),
+                margin=dict(l=140, r=40, t=90, b=140),
             )
             self.plotter.save_figure(fig, plots_dir, f"prolif_{interaction}_compare")
 

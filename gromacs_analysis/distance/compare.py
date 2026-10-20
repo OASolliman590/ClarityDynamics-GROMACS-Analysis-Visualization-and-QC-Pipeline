@@ -31,6 +31,16 @@ _PALETTE = [
 ]
 
 
+def _residue_sort_key(resid):
+    """Sort plain numbers and chain-qualified 'A:45' identifiers together."""
+    text = str(resid)
+    chain, _, number = text.rpartition(":")
+    try:
+        return (chain, int(number))
+    except ValueError:
+        return (chain, 0)
+
+
 class DistanceComparisonAnalyzer:
     """Compare distance profiles across multiple ligands."""
 
@@ -83,7 +93,7 @@ class DistanceComparisonAnalyzer:
                     show_std=self.config.show_std
                 )
 
-                name = f"distance_compare_{label}"
+                name = f"distance_compare_{str(label).replace(':', '_')}"
                 self.plotter.save_plot(
                     fig,
                     plots_dir,
@@ -264,7 +274,7 @@ class DistanceComparisonAnalyzer:
 
         if self.config.compare_mode == "union":
             resids = set().union(*residue_sets)
-            return sorted(resids)
+            return sorted(resids, key=_residue_sort_key)
 
         resids = set.intersection(*residue_sets)
         if not resids:
@@ -274,7 +284,7 @@ class DistanceComparisonAnalyzer:
             )
             resids = set().union(*residue_sets)
 
-        return sorted(resids)
+        return sorted(resids, key=_residue_sort_key)
 
     def _build_residue_labels(self, systems_data: Dict[str, Dict]) -> Dict[int, str]:
         labels: Dict[int, str] = {}
@@ -294,7 +304,7 @@ class DistanceComparisonAnalyzer:
             return []
 
         resids = set.intersection(*residue_sets)
-        return sorted(resids)
+        return sorted(resids, key=_residue_sort_key)
 
     def _build_color_map(self, ligand_names: List[str]) -> Dict[str, Tuple[int, int, int]]:
         color_map: Dict[str, Tuple[int, int, int]] = {}
@@ -364,7 +374,7 @@ class DistanceComparisonAnalyzer:
             data[f"{safe_name}_std"] = stats["std"]
 
         df = pd.DataFrame(data)
-        csv_path = data_dir / f"distance_compare_{label}.csv"
+        csv_path = data_dir / f"distance_compare_{str(label).replace(':', '_')}.csv"
         df.to_csv(csv_path, index=False)
         return csv_path
 

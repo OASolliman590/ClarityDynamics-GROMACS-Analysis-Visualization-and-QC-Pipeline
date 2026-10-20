@@ -252,6 +252,9 @@ Examples:
 
   # Interactive wizard
   gromacs-pipeline --interactive
+
+  # No YAML by hand: discover systems (local, SSH or condorctl), name them, run
+  clarity-setup tui /path/to/simulations
         """,
     )
 

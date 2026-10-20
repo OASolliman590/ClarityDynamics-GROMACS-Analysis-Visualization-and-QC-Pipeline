@@ -18,7 +18,12 @@ class QCConfig:
     protein_selection: str = "protein"
     ligand_selection: str = "resname UNK"
     expected_replicates: Optional[int] = None
+    # Å. Warn if the ligand comes closer than this to the protein (clash / PBC artefact).
     min_distance_cutoff: Optional[float] = None
+    # Å. Warn if the per-frame ligand-protein minimum distance exceeds this
+    # (ligand has left the protein surface). None disables the check.
+    dissociation_cutoff: Optional[float] = 5.0
+    check_frame_times: bool = True
     sample_stride: int = 10
     max_frames: Optional[int] = 500
     fail_on_error: bool = False

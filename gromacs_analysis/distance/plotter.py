@@ -14,6 +14,7 @@ import plotly.io as pio
 
 from .config import DistanceConfig
 from ..utils.mpl_fallback import init_matplotlib
+from ..utils.figure_export import StaticExportUnavailable, write_static
 
 logger = logging.getLogger(__name__)
 
@@ -112,15 +113,16 @@ class DistancePlotter:
                 if fmt == "html":
                     fig.write_html(str(file_path))
                 elif fmt in ("svg", "png"):
-                    fig.write_image(str(file_path), format=fmt,
-                                    width=self.config.plot_config.width * self.config.plot_config.scale,
-                                    height=self.config.plot_config.height * self.config.plot_config.scale)
+                    write_static(fig, file_path, fmt, self.config.plot_config.width, self.config.plot_config.height, self.config.plot_config.scale)
                 logger.info(f"Saved {fmt} plot: {file_path}")
             except Exception as exc:
                 if fmt == "svg" and fallback:
                     if self._save_svg_fallback(file_path, fallback):
                         logger.info(f"Saved SVG via matplotlib fallback: {file_path}")
                         continue
+                if isinstance(exc, StaticExportUnavailable):
+                    logger.debug("Static export unavailable; skipped %s", file_path)
+                    continue
                 logger.error(f"Error saving {fmt} plot {file_path}: {exc}")
 
     def _save_svg_fallback(self, file_path: Path, fallback: Dict) -> bool:
@@ -374,11 +376,8 @@ class DistanceComparisonPlotter:
                 if fmt == "html":
                     fig.write_html(str(file_path))
                 elif fmt in ("svg", "png"):
-                    fig.write_image(
-                        str(file_path),
-                        format=fmt,
-                        width=self.plot_config.width * self.plot_config.scale,
-                        height=self.plot_config.height * self.plot_config.scale,
+                    write_static(
+                        fig, file_path, fmt, self.plot_config.width, self.plot_config.height, self.plot_config.scale
                     )
                 logger.info(f"Saved {fmt} plot: {file_path}")
             except Exception as exc:
@@ -386,6 +385,9 @@ class DistanceComparisonPlotter:
                     if self._save_svg_fallback(file_path, fallback):
                         logger.info(f"Saved SVG via matplotlib fallback: {file_path}")
                         continue
+                if isinstance(exc, StaticExportUnavailable):
+                    logger.debug("Static export unavailable; skipped %s", file_path)
+                    continue
                 logger.error(f"Error saving {fmt} plot {file_path}: {exc}")
 
     def _save_svg_fallback(self, file_path: Path, fallback: Dict) -> bool:

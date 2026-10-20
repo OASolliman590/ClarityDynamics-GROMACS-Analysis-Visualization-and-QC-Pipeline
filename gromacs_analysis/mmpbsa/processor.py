@@ -37,6 +37,7 @@ class MMPBSAProcessor:
         """
         self.config = config
         self.parser = MMPBSAParser(debug=False)
+        self._frames_used: List[Optional[int]] = []
         logger.info("MMPBSAProcessor initialized")
     
     def load_all_data(self) -> Dict[str, Dict]:
@@ -71,6 +72,9 @@ class MMPBSAProcessor:
             
             # Parse and process
             results_data = self._process_results_files(results_files, system.replicates)
+            if self.config.start_frame is not None:
+                qc_metadata["start_frame"] = self.config.start_frame
+                qc_metadata["frames_used"] = list(self._frames_used)
             decomp_data = self._process_decomp_files(decomp_files, system.replicates) if decomp_files else None
             
             all_data[system.name] = {
@@ -260,9 +264,14 @@ class MMPBSAProcessor:
         
         # Parse all files
         parsed_data = []
+        self._frames_used = []
         for file_path in files:
             data = self.parser.parse_results(file_path, file_format='auto')
             if data:
+                if not data.get('entropy'):
+                    data['entropy'] = self._entropy_from_sibling_dat(file_path)
+                if self.config.start_frame is not None:
+                    data = self._apply_start_frame(data, file_path)
                 parsed_data.append(data)
         
         if not parsed_data:
@@ -277,6 +286,59 @@ class MMPBSAProcessor:
             # Multiple replicates: average and calculate SD
             return self._process_replicate_results(parsed_data)
     
+    def _apply_start_frame(self, data: Dict, file_path: Path) -> Dict:
+        """Re-average frame-level results using only frames >= start_frame."""
+        frames = data.get('frame_data')
+        start = int(self.config.start_frame)
+        if frames is None or frames.empty or 'Frame #' not in frames.columns:
+            logger.warning(
+                f"start_frame={start} ignored for {file_path.name}: no frame-level data "
+                "(use CSV output, or set startframe in the gmx_MMPBSA input)."
+            )
+            self._frames_used.append(None)
+            return data
+        frame_numbers = pd.to_numeric(frames['Frame #'], errors='coerce')
+        kept = frames[frame_numbers >= start]
+        self._frames_used.append(int(len(kept)))
+        if kept.empty:
+            raise ValueError(f"start_frame={start} leaves no frames in {file_path}")
+        numeric = [c for c in kept.columns if c != 'Frame #']
+        delta = {}
+        for col in numeric:
+            if col in ('GGAS', 'GSOLV', 'TOTAL'):
+                continue
+            values = pd.to_numeric(kept[col], errors='coerce').dropna()
+            std = float(values.std()) if len(values) > 1 else 0.0
+            delta[col] = {
+                'value': float(values.mean()),
+                'std_dev': std,
+                'std_err': std / np.sqrt(len(values)) if len(values) > 1 else 0.0,
+            }
+        binding = {
+            key: float(pd.to_numeric(kept[key], errors='coerce').mean())
+            for key in ('GGAS', 'GSOLV', 'TOTAL') if key in kept.columns
+        }
+        updated = dict(data)
+        updated['delta_components'] = delta
+        updated['binding_energy'] = binding
+        updated['frame_data'] = kept.copy()
+        updated.setdefault('metadata', {})['frames_used'] = int(len(kept))
+        logger.info(f"{file_path.name}: using {len(kept)} frames with Frame # >= {start}")
+        return updated
+
+    def _entropy_from_sibling_dat(self, results_file: Path) -> Dict:
+        """CSV exports carry no entropy; read IE/C2 from the FINAL_RESULTS DAT next to them."""
+        if results_file.suffix.lower() == '.dat':
+            return {}
+        candidates = sorted(results_file.parent.glob('FINAL_RESULTS*.dat'))
+        stem_match = [c for c in candidates if c.stem in results_file.stem or results_file.stem in c.stem]
+        for candidate in stem_match + [c for c in candidates if c not in stem_match]:
+            entropy = self.parser.extract_entropy_from_file(candidate)
+            if entropy:
+                logger.info(f"Entropy terms for {results_file.name} read from {candidate.name}")
+                return entropy
+        return {}
+
     def _process_replicate_results(self, parsed_data: List[Dict]) -> Dict:
         """
         Process multiple replicate results files.
@@ -322,32 +384,30 @@ class MMPBSAProcessor:
                 frame_tables.append(frame_df)
         
         # Calculate statistics
-        delta_result = {}
-        for comp_name, values in delta_components.items():
-            if values:
-                delta_result[comp_name] = {
-                    'mean': np.mean(values),
-                    'std': np.std(values) if len(values) > 1 else 0.0,
-                    'n': len(values)
-                }
-        
-        binding_result = {}
-        for key, values in binding_energy.items():
-            if values:
-                binding_result[key] = {
-                    'mean': np.mean(values),
-                    'std': np.std(values) if len(values) > 1 else 0.0,
-                    'n': len(values)
-                }
-        
-        entropy_result = {}
-        for key, values in entropy.items():
-            if values:
-                entropy_result[key] = {
-                    'mean': np.mean(values),
-                    'std': np.std(values) if len(values) > 1 else 0.0,
-                    'n': len(values)
-                }
+        # Replicates are the independent samples: report the sample SD (ddof=1)
+        # across replicate averages and the corresponding standard error.
+        delta_result = {
+            comp_name: self._replicate_summary(values)
+            for comp_name, values in delta_components.items()
+            if values
+        }
+        binding_result = {
+            key: self._replicate_summary(values)
+            for key, values in binding_energy.items()
+            if values
+        }
+        entropy_result = {
+            key: self._replicate_summary(values)
+            for key, values in entropy.items()
+            if values
+        }
+        for key, summary in entropy_result.items():
+            sigmas = [d['entropy'][key].get('sigma') for d in parsed_data
+                      if key in d.get('entropy', {}) and d['entropy'][key].get('sigma') is not None]
+            if sigmas:
+                summary['sigma'] = float(np.mean(sigmas))
+                if key == 'interaction_entropy':
+                    summary['reliable'] = bool(max(sigmas) <= self.parser.IE_SIGMA_LIMIT)
         
         return {
             'delta_components': delta_result,
@@ -368,31 +428,51 @@ class MMPBSAProcessor:
         Returns:
             Formatted dictionary
         """
-        # Convert delta components format
+        # Single run: 'std' is the frame-to-frame SD and 'sem' the SEM reported by
+        # gmx_MMPBSA. That SEM assumes uncorrelated frames and is optimistic;
+        # independent replicates are needed for a defensible uncertainty.
+        delta_components = data.get('delta_components', {})
         delta_result = {}
-        for comp_name, comp_data in data.get('delta_components', {}).items():
+        for comp_name, comp_data in delta_components.items():
             delta_result[comp_name] = {
                 'mean': comp_data['value'],
                 'std': comp_data.get('std_dev', 0.0),
-                'n': 1
+                'sem': comp_data.get('std_err', 0.0),
+                'n': 1,
+                'uncertainty': 'frame_sd',
             }
-        
-        # Convert binding energy format
+
+        # Convert binding energy format, reusing the matching Delta term's spread.
+        binding_sources = {
+            'GGAS': ['ΔGGAS'],
+            'GSOLV': ['ΔGSOLV'],
+            'TOTAL': ['ΔTOTAL', 'ΔGTOTAL'],
+        }
         binding_result = {}
         for key, value in data.get('binding_energy', {}).items():
+            source = next(
+                (delta_components[name] for name in binding_sources.get(key, []) if name in delta_components),
+                {},
+            )
             binding_result[key] = {
                 'mean': value,
-                'std': 0.0,
-                'n': 1
+                'std': source.get('std_dev', 0.0),
+                'sem': source.get('std_err', 0.0),
+                'n': 1,
+                'uncertainty': 'frame_sd',
             }
-        
+
         # Convert entropy format
         entropy_result = {}
         for key, entropy_data in data.get('entropy', {}).items():
             entropy_result[key] = {
                 'mean': entropy_data.get('value', 0.0),
                 'std': entropy_data.get('std_dev', 0.0),
-                'n': 1
+                'sem': entropy_data.get('std_err', 0.0),
+                'n': 1,
+                'uncertainty': 'frame_sd',
+                'sigma': entropy_data.get('sigma'),
+                'reliable': entropy_data.get('reliable'),
             }
         
         return {
@@ -478,8 +558,22 @@ class MMPBSAProcessor:
                 
                 if values:
                     row[col] = np.mean(values)
-                    row[f'{col} SD'] = np.std(values) if len(values) > 1 else 0.0
+                    row[f'{col} SD'] = np.std(values, ddof=1) if len(values) > 1 else 0.0
             
             combined_data.append(row)
         
         return pd.DataFrame(combined_data)
+
+    @staticmethod
+    def _replicate_summary(values: List[float]) -> Dict[str, float]:
+        """Mean, sample SD (ddof=1) and SEM over replicate averages."""
+        arr = np.asarray(values, dtype=float)
+        n = len(arr)
+        std = float(np.std(arr, ddof=1)) if n > 1 else 0.0
+        return {
+            'mean': float(np.mean(arr)),
+            'std': std,
+            'sem': std / np.sqrt(n) if n > 1 else 0.0,
+            'n': n,
+            'uncertainty': 'between_replicates' if n > 1 else 'none',
+        }
