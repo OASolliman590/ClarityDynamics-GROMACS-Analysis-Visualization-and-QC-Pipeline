@@ -150,3 +150,25 @@ def test_disabled_publication_preserves_legacy_analyzer_outputs(tmp_path):
     assert result['success'] and result['publication'] is None
     assert (config.output_dir / 'PCA_analysis_summary.md').exists()
     assert not (config.output_dir / 'publication').exists()
+
+
+def test_missing_state_blocks_incomplete_overlay_but_keeps_valid_state_figure(tmp_path):
+    config = folder(tmp_path)
+    (tmp_path / 'Bound.csv').unlink()
+    config.publication.formats = ['html']
+    result = PCAAnalyzer(config).run_analysis()['publication']
+    assert result['availability']['composite']['status'] == 'unavailable'
+    assert (config.output_dir / 'publication' / 'pca_state_1.html').is_file()
+    source = pd.read_csv(result['projections_csv'])
+    assert list(source.state.unique()) == ['Apo']
+    summary = pd.read_csv(result['diagnostics_csv'])
+    missing = summary[(summary.metric == 'projection_inputs') & (summary.state_pair == 'Bound')]
+    assert len(missing) == 1 and missing.iloc[0].status == 'unavailable'
+    assert 'Bound.csv' in missing.iloc[0].reason
+
+
+def test_pca_scene_axes_retain_explicit_coordinate_units(tmp_path):
+    config = folder(tmp_path)
+    fig = PCAPlotter(config).plot_publication_composite(payload(config))
+    for axis in (fig.layout.scene.xaxis, fig.layout.scene.yaxis, fig.layout.scene.zaxis):
+        assert 'nm' in axis.title.text

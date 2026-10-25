@@ -28,7 +28,7 @@ def diagnostic(metric, value=None, unit='fraction', reason='', state_pair='', wi
                 state_pair=state_pair, window=window, source=source)
 
 
-def prepare_payload(states, diagnostics=(), scree_components=10):
+def prepare_payload(states, diagnostics=(), scree_components=10, input_error=''):
     """Validate scientific availability and account for the full eigenvalue sum."""
     records = list(diagnostics)
     prepared = []
@@ -63,9 +63,9 @@ def prepare_payload(states, diagnostics=(), scree_components=10):
             reason='' if len(fractions) >= 3 else 'Three component fractions unavailable',
             state_pair=state['name'], source=state.get('eigenvalue_source', '')))
         prepared.append(state)
-    reason = ''
+    reason = input_error
     if not prepared:
-        reason = 'No PCA projection inputs available'
+        reason = reason or 'No PCA projection inputs available'
     elif len(prepared) > 1:
         basis_ids = {s['basis_id'] for s in prepared}
         if (len(basis_ids) != 1 or not next(iter(basis_ids), None)
@@ -89,9 +89,12 @@ def imported_payload(processor, all_data, detected):
     """Use an explicit manifest when present, otherwise retain single-state inputs."""
     config = processor.config
     manifest_path = Path(config.base_dir) / config.publication.pca_manifest
+    input_error = ''
     if manifest_path.exists():
         parsed = processor.parser.parse_publication_manifest(manifest_path)
         states, records = parsed['states'], parsed['diagnostics']
+        if not parsed['complete']:
+            input_error = 'Shared overlay unavailable: manifest states are incomplete; see input diagnostics'
     else:
         states, records, seen = [], [], set()
         for role, name in [('holo', detected.get('ligand_name') or 'Bound'), ('apo', 'Apo')]:
@@ -116,7 +119,7 @@ def imported_payload(processor, all_data, detected):
             records.append(diagnostic('cosine_content', float(value) if valid else None,
                 reason='' if valid else 'Cosine content must be finite and between zero and one',
                 state_pair=name, window=f'PC{int(pc)}', source=str(detected.get(f'cc_{role}') or '')))
-    return prepare_payload(states, records, config.publication.scree_components)
+    return prepare_payload(states, records, config.publication.scree_components, input_error=input_error)
 
 
 def composite_figure(payload):
@@ -143,9 +146,9 @@ def composite_figure(payload):
         return f'PC{pc} ({variance}; {first["unit"]})'
     fig.update_xaxes(title_text=label(1), row=1, col=1)
     fig.update_yaxes(title_text=label(2), row=1, col=1)
-    fig.update_scenes(xaxis=dict(title=dict(text=label(1).split(';')[0] + ')', font=dict(size=12)), tickfont=dict(size=11)),
-                      yaxis=dict(title=dict(text=label(2).split(';')[0] + ')', font=dict(size=12)), tickfont=dict(size=11)),
-                      zaxis=dict(title=dict(text=label(3).split(';')[0] + ')', font=dict(size=12)), tickfont=dict(size=11)))
+    fig.update_scenes(xaxis=dict(title=dict(text=label(1), font=dict(size=12)), tickfont=dict(size=11)),
+                      yaxis=dict(title=dict(text=label(2), font=dict(size=12)), tickfont=dict(size=11)),
+                      zaxis=dict(title=dict(text=label(3), font=dict(size=12)), tickfont=dict(size=11)))
     fig.update_scenes(camera=dict(eye=dict(x=1.7, y=1.7, z=1.3)))
     k = min(len(fractions), first['scree_components'])
     x = list(range(1, k + 1))

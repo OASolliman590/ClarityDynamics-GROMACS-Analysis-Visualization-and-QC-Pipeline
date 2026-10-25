@@ -1,17 +1,23 @@
 from pathlib import Path
-from types import SimpleNamespace
+import json
 
 import numpy as np
 import pandas as pd
 import pytest
 
 from gromacs_analysis.mmpbsa.parser import MMPBSAParser
+from gromacs_analysis.mmpbsa import parser as mmpbsa_parser
 from gromacs_analysis.mmpbsa.processor import MMPBSAProcessor
 from gromacs_analysis.mmpbsa.plotter import MMPBSAPlotter
 from gromacs_analysis.mmpbsa.analyzer import MMPBSAAnalyzer
 from gromacs_analysis.mmpbsa.config import MMPBSAConfig, MMPBSASystemConfig
 from gromacs_analysis.utils.publication import PublicationConfig
 from gromacs_analysis.utils.palette import categorical
+
+
+def configured_plotter(name='Sys'):
+    return MMPBSAPlotter(MMPBSAConfig(base_dir=Path('.'), output_dir=Path('.'), protein_name='Protein',
+        ligand_name=name, systems=[MMPBSASystemConfig(name=name, dir_pattern='unused')]))
 
 
 def test_csv_results_normalize_component_names_and_preserve_saved_samples(tmp_path):
@@ -38,8 +44,7 @@ def test_csv_results_normalize_component_names_and_preserve_saved_samples(tmp_pa
 
 
 def test_publication_component_payload_separates_raw_grouped_and_total(tmp_path):
-    processor = MMPBSAProcessor.__new__(MMPBSAProcessor)
-    processor.config = None
+    processor = MMPBSAProcessor
     results = {
         "delta_components": {
             "ΔVDWAALS": {"mean": -2.0, "std": 1.0, "uncertainty": "frame_sd"},
@@ -61,8 +66,7 @@ def test_publication_component_payload_separates_raw_grouped_and_total(tmp_path)
 
 
 def test_saved_energy_figure_uses_index_and_centered_mean():
-    plotter = MMPBSAPlotter.__new__(MMPBSAPlotter)
-    plotter._slots = {"Ligand": 0}
+    plotter = configured_plotter("Ligand")
     payload = pd.DataFrame({"sample_index": [1, 2, 3, 4, 5], "total": [-1., -3., -5., -7., -9.]})
     payload["moving_mean"] = [-2., -3., -5., -7., -8.]
     payload["overall_mean"] = -5.0
@@ -79,7 +83,7 @@ def test_saved_energy_figure_uses_index_and_centered_mean():
 def test_saved_energy_payload_uses_only_validated_matching_time_mapping():
     frames = pd.DataFrame({"Frame #": [10, 20, 30], "TOTAL": [-2.0, -4.0, -6.0]})
     results = {"frame_data": frames}
-    processor = MMPBSAProcessor.__new__(MMPBSAProcessor)
+    processor = MMPBSAProcessor
 
     index_payload = processor.publication_energy_payload(results, window=3)
     timed_payload = processor.publication_energy_payload(results, window=3, sampling_metadata={
@@ -96,7 +100,7 @@ def test_saved_energy_payload_uses_only_validated_matching_time_mapping():
 
 
 def test_saved_energy_time_mapping_requires_unique_frames_and_provenance():
-    processor = MMPBSAProcessor.__new__(MMPBSAProcessor)
+    processor = MMPBSAProcessor
     duplicate_frames = {"frame_data": pd.DataFrame({"Frame #": [10, 10, 30], "TOTAL": [-1., -2., -3.]})}
     duplicate_mapping = processor.publication_energy_payload(duplicate_frames, sampling_metadata={
         "validated": True, "frames": [10, 10, 30], "time": [0., 1., 2.], "unit": "ns", "source": "manifest.csv",
@@ -160,7 +164,7 @@ def test_saved_energy_payload_rejects_nonpositive_or_even_window(window):
 
 
 def test_residue_selection_keeps_most_favorable_first_and_supports_all():
-    processor = MMPBSAProcessor.__new__(MMPBSAProcessor)
+    processor = MMPBSAProcessor
     source = pd.DataFrame({"Residue": ["A:1", "A:2", "A:3", "A:4"], "TOTAL Avg.": [1.0, -3.0, -1.0, -5.0]})
 
     selected = processor.publication_residue_payload(source, top_n=2)
@@ -171,7 +175,7 @@ def test_residue_selection_keeps_most_favorable_first_and_supports_all():
 
 
 def test_residue_selection_defaults_to_fifteen_and_breaks_ties_stably():
-    processor = MMPBSAProcessor.__new__(MMPBSAProcessor)
+    processor = MMPBSAProcessor
     residues = [f"R{i:02d}" for i in range(17, 0, -1)]
     energies = {f"R{i:02d}": -float(i) for i in range(1, 15)}
     energies.update({"R14": -14.0, "R15": -14.0, "R16": -15.0, "R17": 2.0})
@@ -220,7 +224,7 @@ def test_replicate_component_statistics_use_only_parsed_replicates(tmp_path):
 
 
 def test_replicate_saved_energy_means_do_not_cross_trace_boundaries():
-    processor = MMPBSAProcessor.__new__(MMPBSAProcessor)
+    processor = MMPBSAProcessor
     frame_data = pd.DataFrame({
         "Replicate": [1, 1, 1, 2, 2, 2],
         "Frame #": [1, 2, 3, 1, 2, 3],
@@ -234,8 +238,7 @@ def test_replicate_saved_energy_means_do_not_cross_trace_boundaries():
         1: [-2.0, -3.0, -4.0], 2: [-15.0, -20.0, -25.0],
     }
     assert samples.groupby("replicate")["overall_mean"].first().to_dict() == {1: -3.0, 2: -20.0}
-    plotter = MMPBSAPlotter.__new__(MMPBSAPlotter)
-    plotter._slots = {"Sys": 0}
+    plotter = configured_plotter()
     figure = plotter.create_publication_energy_figure(payload["samples"], "Sys", window=3)
     assert len(figure.data) == 6
     assert "window 3" in figure.data[1].name
@@ -265,7 +268,7 @@ def test_component_figure_explains_groups_uncertainty_and_missing_terms():
 
 
 def test_nonfinite_saved_total_is_unavailable_with_count():
-    processor = MMPBSAProcessor.__new__(MMPBSAProcessor)
+    processor = MMPBSAProcessor
 
     payload = processor.publication_energy_payload({
         "frame_data": pd.DataFrame({"Frame #": [1, 2, 3], "TOTAL": [-1.0, np.inf, -3.0]})
@@ -274,6 +277,94 @@ def test_nonfinite_saved_total_is_unavailable_with_count():
     assert payload["status"] == "unavailable"
     assert payload["invalid_sample_count"] == 1
     assert "finite" in payload["reason"]
+
+
+def test_saved_total_preserves_nan_sample_position_and_smooths_across_retained_index():
+    result = MMPBSAProcessor.publication_energy_payload({
+        "frame_data": pd.DataFrame({"Frame #": [10, 20, 30], "TOTAL": [-1.0, np.nan, -3.0]})
+    }, window=3)
+    samples = result["samples"]
+
+    assert samples["sample_index"].tolist() == [1, 2, 3]
+    assert samples["frame"].tolist() == [10, 20, 30]
+    assert samples["total"].iloc[0] == -1.0
+    assert pd.isna(samples["total"].iloc[1])
+    assert samples["total"].iloc[2] == -3.0
+    assert samples["moving_mean"].tolist() == [-1.0, -2.0, -3.0]
+    assert result["invalid_samples"] == [{"sample_index": 2, "frame": 20, "reason": "missing_total"}]
+
+
+def test_saved_energy_figure_renders_missing_samples_as_gaps_with_annotation():
+    payload = pd.DataFrame({
+        "sample_index": [1, 2, 3], "frame": [10, 20, 30],
+        "total": [-1.0, np.nan, -3.0], "moving_mean": [-1.0, -2.0, -3.0],
+        "overall_mean": [-2.0, -2.0, -2.0],
+    })
+    plotter = configured_plotter()
+
+    figure = plotter.create_publication_energy_figure(payload, "Sys", window=3)
+
+    assert figure.data[0].connectgaps is False
+    assert any("missing sample" in annotation.text.lower() for annotation in figure.layout.annotations)
+
+
+def test_single_saved_sample_has_undefined_sample_sd(tmp_path):
+    source = tmp_path / "single_sample.csv"
+    pd.DataFrame({"Frame #": [1], "VDWAALS": [-2.0], "TOTAL": [-1.0]}).to_csv(source, index=False)
+    try:
+        parsed = MMPBSAParser().parse_results(source, "csv")
+        component = parsed["canonical_components"]["VDWAALS"]
+        assert component["mean"] == -2.0
+        assert component["n"] == 1
+        assert component["sample_sd"] is None
+        assert component["uncertainty"] == "unavailable"
+    finally:
+        source.unlink(missing_ok=True)
+
+
+def test_publication_component_availability_keeps_source_provenance():
+    data = {"Sys": {"results": {
+        "source_files": ["/input/rep1.dat", "/input/rep2.dat"],
+        "replicate_sources": {"1": "/input/rep1.dat", "2": "/input/rep2.dat"},
+        "canonical_components": {"VDWAALS": {"mean": -2.0, "sample_sd": 0.3, "n": 2}},
+        "mode": "replicate",
+    }}}
+    payload = MMPBSAProcessor.publication_component_payload(data)
+
+    assert mmpbsa_parser.CANONICAL_COMPONENTS == tuple(payload.component.unique())
+    assert payload.attrs["provenance"]["Sys"]["source_files"] == ["/input/rep1.dat", "/input/rep2.dat"]
+    assert json.loads(payload.iloc[0]["source_files"]) == ["/input/rep1.dat", "/input/rep2.dat"]
+
+
+def test_analyzer_records_component_provenance_even_when_energy_trace_is_unavailable(tmp_path):
+    input_dir = tmp_path / "rep"
+    input_dir.mkdir()
+    for index, vdw in enumerate([-2.0, -4.0], start=1):
+        pd.DataFrame({"Frame #": [1, 2], "VDWAALS": [vdw, vdw], "TOTAL": [np.inf, -1.0]}).to_csv(
+            input_dir / f"results{index}.csv", index=False
+        )
+    config = MMPBSAConfig(
+        base_dir=tmp_path, output_dir=tmp_path / "out", protein_name="P", ligand_name="L",
+        systems=[MMPBSASystemConfig(name="Sys", dir_pattern="rep", replicates=2,
+                                    results_file_pattern="results*.csv")],
+        file_format="csv", publication=PublicationConfig(formats=["html"]),
+    )
+    config.plot_config.save_formats = ["html"]
+
+    result = MMPBSAAnalyzer(config).run_analysis()
+
+    pub_dir = tmp_path / "out" / "publication"
+    components = pd.read_csv(pub_dir / "components_source.csv")
+    vdw = components.loc[components.component == "VDWAALS"].iloc[0]
+    expected_paths = [str(input_dir / "results1.csv"), str(input_dir / "results2.csv")]
+    assert json.loads(vdw.source_files) == expected_paths
+    assert json.loads(vdw.replicate_sources) == {"1": expected_paths[0], "2": expected_paths[1]}
+    assert result["publication_outputs"]["availability"]["saved_total:Sys"]["status"] == "unavailable"
+    metadata = json.loads(Path(result["publication_outputs"]["metadata"]).read_text())
+    assert metadata["systems"]["Sys"]["source_files"] == expected_paths
+    assert metadata["availability"]["components"]["provenance"]["Sys"]["replicate_sources"] == {
+        "1": expected_paths[0], "2": expected_paths[1],
+    }
 
 
 def test_start_frame_recomputes_canonical_values_from_kept_saved_rows(tmp_path):
@@ -295,7 +386,7 @@ def test_start_frame_recomputes_canonical_values_from_kept_saved_rows(tmp_path):
 
 
 def test_nonfinite_component_summary_is_explicitly_unavailable():
-    processor = MMPBSAProcessor.__new__(MMPBSAProcessor)
+    processor = MMPBSAProcessor
     payload = processor.publication_component_payload({"Sys": {"results": {
         "mode": "single", "canonical_components": {
             "VDWAALS": {"mean": -1.0, "sample_sd": 0.1, "n": 2},
@@ -339,8 +430,7 @@ def test_sanitized_system_labels_get_distinct_energy_artifact_names(tmp_path):
 
 
 def test_residue_figure_uses_horizontal_bars_with_adaptive_height():
-    plotter = MMPBSAPlotter.__new__(MMPBSAPlotter)
-    plotter._slots = {"Sys": 0}
+    plotter = configured_plotter()
     residues = pd.DataFrame({"Residue": [f"A:{i}" for i in range(1, 26)], "TOTAL Avg.": [-float(i) for i in range(1, 26)]})
 
     figure = plotter.create_publication_residue_figure({"Sys": residues})
@@ -411,3 +501,16 @@ def test_unusable_optional_decomposition_records_reason_and_keeps_other_figures(
     assert result["publication_outputs"]["availability"]["residues:Sys"]["status"] == "unavailable"
     assert result["publication_outputs"]["availability"]["components"]["missing_components"]["Sys"]
 
+
+
+def test_missing_replicate_samples_keep_positions_and_visible_diagnostic():
+    frame_data = pd.DataFrame({'Replicate': [1, 1, 2, 2], 'Frame #': [10, 20, 10, 20],
+                               'TOTAL': [-1., -3., np.nan, np.nan]})
+    payload = MMPBSAProcessor.publication_energy_payload({'frame_data': frame_data}, window=3)
+    assert payload['samples'].replicate.tolist() == [1, 1, 2, 2]
+    assert {int(float(k)): v for k, v in payload['overall_mean'].items()} == {1: -2.0, 2: None}
+    plotter = MMPBSAPlotter(MMPBSAConfig(base_dir=Path('.'), output_dir=Path('.'), protein_name='P', ligand_name='Sys',
+        systems=[MMPBSASystemConfig(name='Sys', dir_pattern='unused')]))
+    figure = plotter.create_publication_energy_figure(payload['samples'], 'Sys', window=3)
+    assert len(figure.data) == 6
+    assert any('missing samples' in a.text.lower() for a in figure.layout.annotations)

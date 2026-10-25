@@ -16,17 +16,17 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
-_CANONICAL_COMPONENTS = ('VDWAALS', 'EEL', 'EGB', 'ESURF', 'GGAS', 'GSOLV', 'TOTAL')
+CANONICAL_COMPONENTS = ('VDWAALS', 'EEL', 'EGB', 'ESURF', 'GGAS', 'GSOLV', 'TOTAL')
 
 
 def _canonical_component_name(name: str) -> Optional[str]:
     """Map CSV/DAT spellings to the stable publication component vocabulary."""
     token = re.sub(r"[^A-Z]", "", str(name).upper())
-    if token.startswith('D') and token[1:] in _CANONICAL_COMPONENTS:
+    if token.startswith('D') and token[1:] in CANONICAL_COMPONENTS:
         token = token[1:]
     if token == 'GTOTAL':
         token = 'TOTAL'
-    return token if token in _CANONICAL_COMPONENTS else None
+    return token if token in CANONICAL_COMPONENTS else None
 
 
 def _canonical_component_payload(delta_components: Dict, frame_data: Optional[pd.DataFrame], binding_energy: Optional[Dict] = None) -> Dict:
@@ -47,9 +47,9 @@ def _canonical_component_payload(delta_components: Dict, frame_data: Optional[pd
                 samples = pd.to_numeric(frame_data[column], errors='coerce').dropna()
         if samples is not None and len(samples):
             mean = float(samples.mean())
-            sample_sd = float(samples.std(ddof=1)) if len(samples) > 1 else 0.0
+            sample_sd = float(samples.std(ddof=1)) if len(samples) > 1 else None
             n = int(len(samples))
-            uncertainty = 'saved_sample_sd'
+            uncertainty = 'saved_sample_sd' if n > 1 else 'unavailable'
         else:
             mean = float(values.get('value', 0.0))
             sample_sd = float(values['std_dev']) if values.get('std_dev') is not None else None

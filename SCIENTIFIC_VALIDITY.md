@@ -100,7 +100,9 @@ true replicate summaries use dispersion of replicate means. Saved TOTAL traces
 use sample index unless explicit validated metadata maps retained frames to
 finite, strictly increasing times. Smoothing is a centered moving mean with
 partial edge windows and configurable positive odd width (default 11); replicate
-boundaries are preserved. Residue panels select the 15 most negative parsed
+boundaries are preserved. Missing samples retain their original positions and
+visible gaps, with identities recorded in metadata. Sample SD is unavailable for
+one observation; a zero SD is never invented for that case. Residue panels select the 15 most negative parsed
 TOTAL values by default, support custom positive top-N and all-residues modes,
 and identify negative values as favorable within endpoint decomposition.
 

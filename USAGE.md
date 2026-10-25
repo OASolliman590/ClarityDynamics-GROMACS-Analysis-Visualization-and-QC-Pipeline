@@ -432,6 +432,7 @@ Neither is a claim of experimental binding free energy.
 
 Saved TOTAL traces show every estimate, a centered moving mean (partial windows
 at the ends), and the overall mean. Replicates are kept separate when smoothing.
+Missing TOTAL samples retain their original positions as visible gaps, with sample/frame identities recorded in metadata. A single valid saved sample retains its mean but has unavailable sample SD.
 The default x-axis is **Saved sample index**. Frame numbers alone never supply time.
 To use physical time, give a validated one-to-one frame/time map in the same
 publication block; frame identities must match the retained results, and the mapped

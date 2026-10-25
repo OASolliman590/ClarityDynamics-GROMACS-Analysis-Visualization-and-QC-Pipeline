@@ -14,6 +14,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from .config import MMPBSAConfig
+from .parser import CANONICAL_COMPONENTS
 from ..utils.mpl_fallback import init_matplotlib
 from ..utils.figure_export import StaticExportUnavailable, write_static
 from ..utils.palette import APO_HEX, MUTED_HEX, categorical, mix
@@ -59,41 +60,44 @@ class MMPBSAPlotter:
             return fig
         x_column = 'time' if 'time' in payload.columns else 'sample_index'
         system_color = self._system_color(system_name)
+        annotations = [dict(text=f'Centered moving window: {window} samples' + (' per replicate' if 'replicate' in payload else ''), x=0.99, y=0.98,
+                            xref='paper', yref='paper', showarrow=False, xanchor='right')]
+        if payload['total'].isna().any():
+            annotations.append(dict(text=f"Missing samples: {int(payload['total'].isna().sum())}; gaps preserved",
+                                    x=0.01, y=0.98, xref='paper', yref='paper', showarrow=False,
+                                    xanchor='left'))
+        fig.update_layout(title=f'Saved-sample TOTAL energy · {system_name}', xaxis_title=x_label,
+                          yaxis_title='TOTAL (kcal/mol)', template='plotly_white',
+                          annotations=annotations)
         if 'replicate' in payload.columns:
             for replicate, data in payload.groupby('replicate', sort=False):
                 x_rep = data[x_column]
                 fig.add_trace(go.Scatter(x=x_rep, y=data['total'], mode='lines+markers',
                                          name=f'Replicate {replicate} TOTAL',
                                          line=dict(color=mix(system_color, '#ffffff', 0.45), width=1),
-                                         marker=dict(size=4, color=system_color)))
+                                         marker=dict(size=4, color=system_color), connectgaps=False))
                 fig.add_trace(go.Scatter(x=x_rep, y=data['moving_mean'], mode='lines',
                                          name=f'Replicate {replicate} centered mean (window {window})',
-                                         line=dict(color=system_color, width=2.5)))
+                                         line=dict(color=system_color, width=2.5), connectgaps=False))
                 fig.add_trace(go.Scatter(x=x_rep, y=data['overall_mean'], mode='lines',
                                          name=f'Replicate {replicate} overall mean',
-                                         line=dict(color=MUTED_HEX, dash='dash')))
-            fig.update_layout(title=f'Saved-sample TOTAL energy · {system_name}', xaxis_title=x_label,
-                              yaxis_title='TOTAL (kcal/mol)', template='plotly_white',
-                              annotations=[dict(text=f'Centered moving window: {window} samples per replicate',
-                                                 x=0.99, y=0.98, xref='paper', yref='paper', showarrow=False,
-                                                 xanchor='right')])
+                                         line=dict(color=MUTED_HEX, dash='dash'), connectgaps=False))
             return fig
         x = payload[x_column]
         fig.add_trace(go.Scatter(x=x, y=payload['total'], mode='lines+markers', name='Saved TOTAL',
                                  line=dict(color=mix(system_color, '#ffffff', 0.45), width=1),
                                  marker=dict(size=4, color=system_color),
+                                 connectgaps=False,
                                  hovertemplate='%{x}<br>TOTAL: %{y:.3f} kcal/mol<extra></extra>'))
         fig.add_trace(go.Scatter(x=x, y=payload['moving_mean'], mode='lines',
                                  name=f'Centered moving mean ({window})',
                                  line=dict(color=system_color, width=2.5),
+                                 connectgaps=False,
                                  hovertemplate='%{x}<br>Moving mean: %{y:.3f} kcal/mol<extra></extra>'))
         fig.add_trace(go.Scatter(x=x, y=payload['overall_mean'], mode='lines', name='Overall mean',
                                  line=dict(color=MUTED_HEX, dash='dash'),
+                                 connectgaps=False,
                                  hovertemplate='Overall mean: %{y:.3f} kcal/mol<extra></extra>'))
-        fig.update_layout(title=f'Saved-sample TOTAL energy · {system_name}', xaxis_title=x_label,
-                          yaxis_title='TOTAL (kcal/mol)', template='plotly_white',
-                          annotations=[dict(text=f'Centered moving window: {window} samples', x=0.99, y=0.98,
-                                             xref='paper', yref='paper', showarrow=False, xanchor='right')])
         return fig
 
     @staticmethod
@@ -104,7 +108,7 @@ class MMPBSAPlotter:
             return go.Figure()
         fig = make_subplots(rows=1, cols=len(systems), subplot_titles=systems, shared_yaxes=False,
                             horizontal_spacing=min(0.12, 0.35 / max(1, len(systems))))
-        order = ['VDWAALS', 'EEL', 'EGB', 'ESURF', 'GGAS', 'GSOLV', 'TOTAL']
+        order = list(CANONICAL_COMPONENTS)
         colors = {'raw': categorical(0), 'grouped': categorical(1), 'total': APO_HEX}
         for col, system in enumerate(systems, 1):
             system_rows = payload[payload['system'] == system]
@@ -194,7 +198,7 @@ class MMPBSAPlotter:
         errors = []
         
         # Order: VDWAALS, EEL, EGB, ESURF, GGAS, GSOLV
-        component_order = ['ΔVDWAALS', 'ΔEEL', 'ΔEGB', 'ΔESURF', 'ΔGGAS', 'ΔGSOLV']
+        component_order = [f'Δ{name}' for name in CANONICAL_COMPONENTS if name != 'TOTAL']
         
         for comp in component_order:
             if comp in delta_components:
@@ -552,7 +556,7 @@ class MMPBSAPlotter:
             raise ValueError("No results available for component comparison")
 
         if component_order is None:
-            component_order = ['ΔVDWAALS', 'ΔEEL', 'ΔEGB', 'ΔESURF', 'ΔGGAS', 'ΔGSOLV', 'ΔTOTAL']
+            component_order = [f'Δ{name}' for name in CANONICAL_COMPONENTS]
 
         components = []
         for comp in component_order:
@@ -1009,7 +1013,7 @@ class MMPBSAPlotter:
         entropy = results_data.get('entropy', {})
         mode = results_data.get('mode', 'single')
 
-        component_order = ['ΔVDWAALS', 'ΔEEL', 'ΔEGB', 'ΔESURF', 'ΔGGAS', 'ΔGSOLV']
+        component_order = [f'Δ{name}' for name in CANONICAL_COMPONENTS if name != 'TOTAL']
         components = []
         values = []
         errors = []

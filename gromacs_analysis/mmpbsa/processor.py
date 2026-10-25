@@ -6,13 +6,17 @@ Handles data processing, replicate averaging, and SD calculation.
 """
 
 import logging
+import json
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import pandas as pd
 import numpy as np
 
 from .config import MMPBSAConfig, MMPBSASystemConfig
-from .parser import MMPBSAParser, _canonical_component_name, _canonical_component_payload
+from .parser import (
+    CANONICAL_COMPONENTS, MMPBSAParser, _canonical_component_name,
+    _canonical_component_payload,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +47,7 @@ class MMPBSAProcessor:
     @staticmethod
     def publication_component_payload(all_data: Dict[str, Dict]) -> pd.DataFrame:
         """Return long-form component means and dispersion with scientific grouping."""
-        component_order = ('VDWAALS', 'EEL', 'EGB', 'ESURF', 'GGAS', 'GSOLV', 'TOTAL')
+        component_order = CANONICAL_COMPONENTS
         legacy_names = {name: f'Δ{name}' for name in component_order}
         rows = []
         for system_name, system_data in all_data.items():
@@ -57,6 +61,8 @@ class MMPBSAProcessor:
                         'system': system_name, 'component': name, 'group': group, 'mean': None,
                         'sd': None, 'uncertainty': None, 'status': 'unavailable',
                         'n': 0, 'reason': f'{name} was not present in the parsed results.',
+                        'source_files': json.dumps(results.get('source_files', [])),
+                        'replicate_sources': json.dumps(results.get('replicate_sources', {})),
                     })
                     continue
                 uncertainty = value.get('uncertainty')
@@ -68,7 +74,7 @@ class MMPBSAProcessor:
                     uncertainty = 'saved_sample_sd'
                 elif not uncertainty:
                     uncertainty = 'saved_sample_sd' if results.get('mode') == 'single' else 'unavailable_single_replicate'
-                spread = value.get('std', value.get('sample_sd', value.get('std_dev', 0.0)))
+                spread = value.get('std', value.get('sample_sd', value.get('std_dev')))
                 if uncertainty == 'unavailable_single_replicate':
                     spread = None
                 mean = value.get('mean', value.get('value'))
@@ -79,6 +85,8 @@ class MMPBSAProcessor:
                         'system': system_name, 'component': name, 'group': group, 'mean': None,
                         'sd': None, 'n': value.get('n', 0), 'uncertainty': None,
                         'status': 'unavailable', 'reason': 'Component mean or dispersion is not finite.',
+                        'source_files': json.dumps(results.get('source_files', [])),
+                        'replicate_sources': json.dumps(results.get('replicate_sources', {})),
                     })
                     continue
                 rows.append({
@@ -88,8 +96,18 @@ class MMPBSAProcessor:
                     'n': value.get('n', 0),
                     'uncertainty': uncertainty,
                     'status': 'available', 'reason': None,
+                    'source_files': json.dumps(results.get('source_files', [])),
+                    'replicate_sources': json.dumps(results.get('replicate_sources', {})),
                 })
-        return pd.DataFrame(rows, columns=['system', 'component', 'group', 'mean', 'sd', 'n', 'uncertainty', 'status', 'reason'])
+        payload = pd.DataFrame(rows)
+        payload.attrs['provenance'] = {
+            system: {
+                'source_files': (system_data.get('results') or {}).get('source_files', []),
+                'replicate_sources': (system_data.get('results') or {}).get('replicate_sources', {}),
+            }
+            for system, system_data in all_data.items()
+        }
+        return payload
 
     @staticmethod
     def publication_energy_payload(
@@ -114,26 +132,36 @@ class MMPBSAProcessor:
             }
         groups = list(frame_data.groupby('Replicate', sort=False)) if 'Replicate' in frame_data.columns else [(None, frame_data)]
         sample_frames = []
+        invalid_samples = []
         for replicate, group in groups:
             total_values = pd.to_numeric(group[total_column], errors='coerce')
-            valid_rows = total_values.notna()
-            total = total_values.loc[valid_rows].reset_index(drop=True)
-            if total.empty:
-                continue
+            finite_values = total_values[np.isfinite(total_values.to_numpy())]
+            sample_index = np.arange(1, len(group) + 1)
+            frames_for_group = group['Frame #'].to_numpy() if 'Frame #' in group.columns else None
+            for local_index, value in enumerate(total_values.to_numpy(), start=1):
+                if pd.isna(value):
+                    invalid = {'sample_index': local_index, 'reason': 'missing_total'}
+                    if frames_for_group is not None:
+                        frame = frames_for_group[local_index - 1]
+                        invalid['frame'] = None if pd.isna(frame) else (frame.item() if hasattr(frame, 'item') else frame)
+                    if replicate is not None:
+                        invalid['replicate'] = replicate.item() if hasattr(replicate, 'item') else replicate
+                    invalid_samples.append(invalid)
             samples = pd.DataFrame({
-                'sample_index': np.arange(1, len(total) + 1), 'total': total,
-                'moving_mean': total.rolling(window=window, center=True, min_periods=1).mean().values,
-                'overall_mean': float(total.mean()),
+                'sample_index': sample_index, 'total': total_values.to_numpy(),
+                'moving_mean': total_values.rolling(window=window, center=True, min_periods=1).mean().to_numpy(),
+                'overall_mean': float(finite_values.mean()) if len(finite_values) else np.nan,
             })
             if 'Frame #' in group.columns:
-                samples['frame'] = group.loc[valid_rows, 'Frame #'].reset_index(drop=True).to_numpy()
+                samples['frame'] = frames_for_group
             if replicate is not None:
                 samples['replicate'] = replicate
             sample_frames.append(samples)
-        if not sample_frames:
+        if not sample_frames or not all_total_values.notna().any():
             return {
                 'status': 'unavailable', 'reason': 'Saved TOTAL samples contain no finite values.',
                 'invalid_sample_count': invalid_sample_count,
+                'invalid_samples': invalid_samples,
             }
         samples = pd.concat(sample_frames, ignore_index=True)
         axis = 'Saved sample index'
@@ -176,7 +204,8 @@ class MMPBSAProcessor:
             'x_label': axis, 'window': window,
             'physical_time': physical_time,
             'invalid_sample_count': invalid_sample_count,
-            'overall_mean': {str(row['replicate']): float(row['overall_mean']) for _, row in samples.drop_duplicates('replicate').iterrows()}
+            'invalid_samples': invalid_samples,
+            'overall_mean': {str(row['replicate']): None if pd.isna(row['overall_mean']) else float(row['overall_mean']) for _, row in samples.drop_duplicates('replicate').iterrows()}
                 if 'replicate' in samples else float(samples['overall_mean'].iloc[0]),
             'source': results.get('source'),
         }
@@ -439,7 +468,9 @@ class MMPBSAProcessor:
         # Process based on number of replicates
         if n_replicates == 1 or len(parsed_data) == 1:
             # Single trajectory
-            return self._format_single_results(parsed_data[0])
+            result = self._format_single_results(parsed_data[0])
+            result['source_files'] = [data['source'] for data in parsed_data if data.get('source')]
+            return result
         else:
             # Multiple replicates: average and calculate SD
             return self._process_replicate_results(parsed_data)
@@ -586,6 +617,7 @@ class MMPBSAProcessor:
                 str(index): data['source']
                 for index, data in enumerate(parsed_data, start=1) if data.get('source')
             },
+            'source_files': [data['source'] for data in parsed_data if data.get('source')],
             'entropy': entropy_result,
             'n_replicates': n_replicates,
             'mode': 'replicate',

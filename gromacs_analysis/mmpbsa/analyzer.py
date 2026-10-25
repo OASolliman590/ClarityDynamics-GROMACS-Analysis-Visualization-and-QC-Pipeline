@@ -343,6 +343,7 @@ class MMPBSAAnalyzer:
             availability['components'] = {
                 'status': 'available', 'source': source, 'formats': exports,
                 'missing_components': missing_components,
+                'provenance': component_payload.attrs.get('provenance', {}),
             }
 
         residue_payloads = {}
@@ -370,6 +371,7 @@ class MMPBSAAnalyzer:
                     'x_axis': energy['x_label'], 'moving_window': publication.moving_window,
                     'physical_time': energy['physical_time'],
                     'invalid_sample_count': energy.get('invalid_sample_count', 0),
+                    'invalid_samples': energy.get('invalid_samples', []),
                     'overall_mean': energy['overall_mean'], 'provenance': provenance,
                     'replicate_provenance': results.get('replicate_sources', {})
                     if isinstance(energy['overall_mean'], dict) else {},
@@ -416,6 +418,13 @@ class MMPBSAAnalyzer:
             'moving_window': publication.moving_window,
             'top_n': publication.top_n,
             'sampling_metadata': publication.sampling_metadata,
+            'systems': {
+                system_name: {
+                    'source_files': (system_data.get('results') or {}).get('source_files', []),
+                    'replicate_sources': (system_data.get('results') or {}).get('replicate_sources', {}),
+                }
+                for system_name, system_data in all_data.items()
+            },
             'availability': availability,
         }
         metadata_path = write_metadata(metadata, output_dir, 'metadata')
