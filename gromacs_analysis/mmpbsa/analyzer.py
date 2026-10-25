@@ -7,6 +7,7 @@ Coordinates data processing and plotting.
 """
 
 import logging
+import re
 from pathlib import Path
 from typing import Dict, Optional, List
 import pandas as pd
@@ -14,8 +15,14 @@ import pandas as pd
 from .config import MMPBSAConfig
 from .processor import MMPBSAProcessor
 from .plotter import MMPBSAPlotter
+from ..utils.publication import export_publication_figure, write_metadata, write_source_table
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_publication_token(value: str) -> str:
+    token = re.sub(r'[^A-Za-z0-9_.-]+', '_', str(value)).strip('._')
+    return token or 'system'
 
 
 class MMPBSAAnalyzer:
@@ -275,6 +282,8 @@ class MMPBSAAnalyzer:
             except Exception as e:
                 logger.error(f"  ✗ Error creating components comparison plot: {e}")
         
+        publication_outputs = self._write_publication_outputs(all_data)
+
         # Step 4: Save parsed data as CSV
         logger.info("\n[4/6] Exporting parsed data to CSV...")
         data_files = self._save_parsed_data_csv(all_data)
@@ -300,8 +309,128 @@ class MMPBSAAnalyzer:
             'plots_created': plots_created,
             'statistics_file': str(statistics_file) if statistics_file else None,
             'summary_file': str(summary_file) if summary_file else None,
-            'n_systems': len(all_data)
+            'n_systems': len(all_data),
+            'publication_outputs': publication_outputs,
         }
+
+    def _write_publication_outputs(self, all_data: Dict) -> Dict:
+        """Write additive publication figures, source tables, and availability metadata."""
+        publication = getattr(self.config, 'publication', None)
+        if publication is None or not publication.enabled:
+            return {}
+        output_dir = self.config.output_dir / publication.subdirectory
+        output_dir.mkdir(parents=True, exist_ok=True)
+        outputs: Dict[str, object] = {}
+        availability: Dict[str, object] = {}
+
+        component_payload = self.processor.publication_component_payload(all_data)
+        if component_payload.empty:
+            availability['components'] = {
+                'status': 'unavailable', 'reason': 'No supported component summaries were parsed.'
+            }
+        else:
+            missing_components = {
+                system: component_payload.loc[
+                    (component_payload['system'] == system) & (component_payload['status'] == 'unavailable'),
+                    ['component', 'reason'],
+                ].to_dict(orient='records')
+                for system in component_payload['system'].unique()
+            }
+            source = write_source_table(component_payload, output_dir, 'components_source')
+            figure = self.plotter.create_publication_components_figure(component_payload)
+            exports = export_publication_figure(figure, output_dir, 'components', publication)
+            outputs['components'] = {'source': source, 'formats': exports}
+            availability['components'] = {
+                'status': 'available', 'source': source, 'formats': exports,
+                'missing_components': missing_components,
+                'provenance': component_payload.attrs.get('provenance', {}),
+            }
+
+        residue_payloads = {}
+        for system_index, (system_name, system_data) in enumerate(all_data.items(), start=1):
+            provenance = (system_data.get('qc') or {}).get('results_files', [])
+            results = system_data.get('results') or {}
+            sampling = (publication.sampling_metadata or {}).get(system_name)
+            energy = self.processor.publication_energy_payload(
+                results, window=publication.moving_window, sampling_metadata=sampling,
+            )
+            if energy.get('status') != 'available':
+                availability[f'saved_total:{system_name}'] = energy
+            else:
+                sample_data = energy['samples'].copy()
+                safe_name = _safe_publication_token(system_name)
+                artifact_stem = f'saved_total_{system_index}_{safe_name}'
+                energy_source = write_source_table(sample_data, output_dir, f'{artifact_stem}_source')
+                figure = self.plotter.create_publication_energy_figure(
+                    sample_data, system_name, window=publication.moving_window, x_label=energy['x_label'],
+                )
+                exports = export_publication_figure(figure, output_dir, artifact_stem, publication)
+                outputs[f'saved_total:{system_name}'] = {'source': energy_source, 'formats': exports}
+                availability[f'saved_total:{system_name}'] = {
+                    'status': 'available', 'source': energy_source, 'formats': exports,
+                    'x_axis': energy['x_label'], 'moving_window': publication.moving_window,
+                    'physical_time': energy['physical_time'],
+                    'invalid_sample_count': energy.get('invalid_sample_count', 0),
+                    'invalid_samples': energy.get('invalid_samples', []),
+                    'overall_mean': energy['overall_mean'], 'provenance': provenance,
+                    'replicate_provenance': results.get('replicate_sources', {})
+                    if isinstance(energy['overall_mean'], dict) else {},
+                }
+
+            decomp = system_data.get('decomp')
+            if decomp is None or decomp.empty:
+                availability[f'residues:{system_name}'] = {
+                    'status': 'unavailable', 'reason': 'No residue decomposition input was parsed.'
+                }
+                continue
+            selected = self.processor.publication_residue_payload(decomp, top_n=publication.top_n)
+            if selected.empty:
+                availability[f'residues:{system_name}'] = {
+                    'status': 'unavailable', 'reason': 'Parsed decomposition has no numeric TOTAL residue contributions.',
+                    'provenance': (system_data.get('qc') or {}).get('decomp_files', []),
+                }
+                continue
+            selected.insert(0, 'System', system_name)
+            residue_payloads[system_name] = selected
+            availability[f'residues:{system_name}'] = {
+                'status': 'available', 'top_n': publication.top_n,
+                'selection': 'all' if publication.top_n == 'all' else f'most_negative_{publication.top_n}',
+                'provenance': (system_data.get('qc') or {}).get('decomp_files', []),
+            }
+
+        if residue_payloads:
+            residue_source_data = pd.concat(residue_payloads.values(), ignore_index=True)
+            source = write_source_table(residue_source_data, output_dir, 'residues_source')
+            plots_payloads = {name: df.drop(columns=['System']) for name, df in residue_payloads.items()}
+            figure = self.plotter.create_publication_residue_figure(plots_payloads)
+            exports = export_publication_figure(figure, output_dir, 'residues', publication)
+            outputs['residues'] = {'source': source, 'formats': exports}
+            availability['residues'] = {'status': 'available', 'source': source, 'formats': exports}
+        else:
+            availability['residues'] = {
+                'status': 'unavailable', 'reason': 'No residue decomposition inputs were available.'
+            }
+
+        metadata = {
+            'schema_version': 1,
+            'description': 'MM/GBSA endpoint decomposition and saved-sample estimates; not experimental binding free energies.',
+            'units': 'kcal/mol',
+            'moving_window': publication.moving_window,
+            'top_n': publication.top_n,
+            'sampling_metadata': publication.sampling_metadata,
+            'systems': {
+                system_name: {
+                    'source_files': (system_data.get('results') or {}).get('source_files', []),
+                    'replicate_sources': (system_data.get('results') or {}).get('replicate_sources', {}),
+                }
+                for system_name, system_data in all_data.items()
+            },
+            'availability': availability,
+        }
+        metadata_path = write_metadata(metadata, output_dir, 'metadata')
+        outputs['metadata'] = metadata_path
+        outputs['availability'] = availability
+        return outputs
     
     def _create_output_dirs(self):
         """Create output directory structure."""

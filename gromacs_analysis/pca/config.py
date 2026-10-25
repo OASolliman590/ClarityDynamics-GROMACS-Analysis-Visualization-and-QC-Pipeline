@@ -7,6 +7,7 @@ from typing import Optional, List, Tuple
 from pathlib import Path
 
 from ..md.config import PlotConfig
+from ..utils.publication import PublicationConfig
 
 
 @dataclass
@@ -130,6 +131,7 @@ class PCAConfig:
     fel: FELConfig = field(default_factory=FELConfig)
     clustering: ClusteringConfig = field(default_factory=ClusteringConfig)
     run_gromacs: PCAGromacsRunConfig = field(default_factory=PCAGromacsRunConfig)
+    publication: PublicationConfig = field(default_factory=PublicationConfig)
     
     def __post_init__(self):
         """Set default output directory if not provided."""
@@ -219,6 +221,8 @@ class PCAJointConfig:
         font_size=16,
         save_formats=["html", "svg"],
     ))
+
+    publication: PublicationConfig = field(default_factory=PublicationConfig)
 
     def __post_init__(self):
         self.output_dir = Path(self.output_dir)

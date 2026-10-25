@@ -3,6 +3,8 @@ YAML loader/saver for pipeline configurations.
 """
 
 import logging
+from dataclasses import asdict
+from ..utils.publication import PublicationConfig
 from pathlib import Path
 from typing import Any, Dict, Optional, List
 
@@ -29,7 +31,7 @@ from .stage_builders import (  # noqa: F401 - re-exported for backward compatibi
 from .templates import PIPELINE_TEMPLATE
 from ..md.config import MDConfig, SystemConfig, AnalysisMetric, PlotConfig, StabilityConfig, RMSFTerminalConfig
 from ..mmpbsa.config import MMPBSAConfig, MMPBSASystemConfig
-from ..pca.config import PCAConfig, PCASystemConfig, PCACompareConfig, FELConfig, ClusteringConfig
+from ..pca.config import PCAConfig, PCASystemConfig, PCACompareConfig, PCAJointConfig, FELConfig, ClusteringConfig
 from ..distance.config import DistanceConfig, DistanceCompareConfig
 from ..interactions.config import InteractionConfig, InteractionCompareConfig
 from ..ranking.config import RankingConfig
@@ -260,6 +262,7 @@ def _build_mmpbsa_config(data: Dict[str, Any], base_path: Path, defaults: Dict[s
         incomplete_replicates_policy=data.get("incomplete_replicates_policy", "warn"),
         start_frame=data.get("start_frame"),
         require_decomp_replicates=bool(data.get("require_decomp_replicates", False)),
+        publication=PublicationConfig(**(data.get("publication") or {})),
     )
 
 
@@ -382,6 +385,7 @@ def _build_pca_config(data: Dict[str, Any], base_path: Path, defaults: Dict[str,
         fel=fel_config,
         clustering=clustering_config,
         run_gromacs=run_gromacs_config,
+        publication=PublicationConfig(**(data.get("publication") or {})),
     )
 
 
@@ -829,6 +833,7 @@ def _build_pca_batch_configs(stage_data: Dict[str, Any], base_path: Path, defaul
         "n_pcs": n_pcs,
         "plot_config": stage_data.get("plot_config", {}),
         "run_gromacs": stage_data.get("run_gromacs", {}),
+        "publication": stage_data.get("publication", {}),
     }
 
     output_pattern = stage_data.get("output_subdir_pattern", "{name}")
@@ -862,6 +867,7 @@ def _build_pca_batch_configs(stage_data: Dict[str, Any], base_path: Path, defaul
             "apo_base_dir": sys_data.get("apo_base_dir"),
             "systems": sys_data.get("systems", []),
             "run_gromacs": run_gromacs_data,
+            "publication": {**(shared.get("publication") or {}), **(sys_data.get("publication") or {})},
             "color": sys_data.get("color") or categorical(slot),
         }
 
@@ -1551,6 +1557,7 @@ def _md_config_to_dict(config: MDConfig) -> Dict[str, Any]:
 
 def _mmpbsa_config_to_dict(config: MMPBSAConfig) -> Dict[str, Any]:
     return {
+        "publication": asdict(config.publication),
         "protein_name": config.protein_name,
         "ligand_name": config.ligand_name,
         "base_dir": str(config.base_dir),
@@ -1561,6 +1568,7 @@ def _mmpbsa_config_to_dict(config: MMPBSAConfig) -> Dict[str, Any]:
         "compare_component_order": config.compare_component_order,
         "incomplete_replicates_policy": config.incomplete_replicates_policy,
         "require_decomp_replicates": config.require_decomp_replicates,
+        "start_frame": config.start_frame,
         "systems": [
             {
                 "name": s.name,
@@ -1608,6 +1616,7 @@ def _qc_config_to_dict(config: QCConfig) -> Dict[str, Any]:
 
 def _pca_config_to_dict(config: PCAConfig) -> Dict[str, Any]:
     return {
+        "publication": asdict(config.publication),
         "base_dir": str(config.base_dir),
         "output_dir": str(config.output_dir) if config.output_dir else None,
         "protein_name": config.protein_name,
@@ -1689,6 +1698,17 @@ def _pca_config_to_dict(config: PCAConfig) -> Dict[str, Any]:
         if config.systems
         else None,
     }
+
+
+def _pca_joint_config_to_dict(config: PCAJointConfig) -> Dict[str, Any]:
+    data = asdict(config)
+    data['base_dir'] = str(config.base_dir or Path.cwd())
+    data['output_dir'] = str(config.output_dir)
+    data['plot_config']['colors'] = {name: list(rgb) for name, rgb in config.plot_config.colors.items()}
+    for system in data['systems']:
+        system['topology'] = str(system['topology'])
+        system['trajectories'] = [str(path) for path in system['trajectories']]
+    return data
 
 
 def _pca_compare_config_to_dict(config: PCACompareConfig) -> Dict[str, Any]:
@@ -1895,6 +1915,8 @@ def save_pipeline_config(config: PipelineConfig, output_path: Path) -> None:
                 stage_block.update(_mmpbsa_config_to_dict(stage.config))
             elif stage_name == "pca" and isinstance(stage.config, PCAConfig):
                 stage_block.update(_pca_config_to_dict(stage.config))
+            elif stage_name == "pca_joint" and isinstance(stage.config, PCAJointConfig):
+                stage_block.update(_pca_joint_config_to_dict(stage.config))
             elif stage_name == "pca_compare" and isinstance(stage.config, PCACompareConfig):
                 stage_block.update(_pca_compare_config_to_dict(stage.config))
             elif stage_name == "distance" and isinstance(stage.config, DistanceConfig):

@@ -12,6 +12,7 @@ import yaml
 
 from .config import MMPBSAConfig, MMPBSASystemConfig
 from ..md.config import PlotConfig
+from ..utils.publication import PublicationConfig
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +82,11 @@ def load_yaml_config(yaml_path: Path) -> MMPBSAConfig:
         compare_systems=bool(data.get('compare_systems', False)),
         compare_binding_key=data.get('compare_binding_key', 'TOTAL'),
         compare_components=bool(data.get('compare_components', False)),
-        compare_component_order=data.get('compare_component_order')
+        compare_component_order=data.get('compare_component_order'),
+        publication=PublicationConfig(**(data.get('publication') or {})),
+        start_frame=data.get('start_frame'),
+        incomplete_replicates_policy=data.get('incomplete_replicates_policy', 'warn'),
+        require_decomp_replicates=bool(data.get('require_decomp_replicates', False)),
     )
     
     return config
@@ -129,6 +134,17 @@ amino_acids:
   
   # Option 3: Custom list (comment out 'range' above)
   # custom: [814, 815, 816, 994, 995, 996]
+
+# Additional figures and numerical sources below output_dir/publication
+publication:
+  enabled: true
+  subdirectory: publication
+  formats: [html, svg, png, pdf]
+  scree_components: 10
+  moving_window: 11  # positive odd saved-sample count
+  top_n: 15         # positive integer or all
+  pca_manifest: publication_inputs.json
+  sampling_metadata: {}  # validated frame/time mapping; see USAGE.md
 
 # Plot configuration
 plot_config:

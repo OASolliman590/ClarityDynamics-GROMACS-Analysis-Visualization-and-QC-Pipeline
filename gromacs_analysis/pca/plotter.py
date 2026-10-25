@@ -707,3 +707,8 @@ class PCAPlotter:
         plt.savefig(file_path, format='svg', bbox_inches='tight')
         plt.close()
         return True
+
+    def plot_publication_composite(self, payload: Dict):
+        """Render the verified publication payload without changing legacy plots."""
+        from .publication import composite_figure
+        return composite_figure(payload)

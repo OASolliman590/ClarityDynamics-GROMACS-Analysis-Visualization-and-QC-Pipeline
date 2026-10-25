@@ -142,3 +142,8 @@ Older standalone scripts are archived in `../../_legacy_scripts/`. They are reta
 - Tests: `pip install -r requirements.txt pytest MDAnalysis && pytest -q` (CI runs them on every pull request).
 - Features are specified with [GitHub Spec Kit](https://github.com/github/spec-kit): project principles in
   `.specify/memory/constitution.md`, feature specs, plans and task lists under `specs/`.
+
+PCA and MM/GBSA stages also generate additive publication composites, auditable
+CSV/JSON sources, and HTML/SVG/PNG/PDF exports under `publication/` by default.
+See [publication reporting](USAGE.md#publication-pca-and-mmgbsa-reports) for shared-basis
+PCA provenance, diagnostic availability, saved-sample time mapping, and residue scope.

@@ -333,6 +333,7 @@ def _build_ttclust_batch_configs(stage_data: Dict[str, Any], base_path: Path, de
 
 def _build_pca_joint_config(stage_data: Dict[str, Any], base_path: Path, defaults: Dict[str, Any]):
     """Joint PCA over several systems (explicit ``systems`` or ``auto_discover``)."""
+    from ..utils.publication import PublicationConfig
     from ..pca.config import PCAJointConfig, PCAJointSystem  # local import: pca imports plotting deps
 
     raw_base_dir = stage_data.get("base_dir") or defaults.get("data_root")
@@ -381,6 +382,7 @@ def _build_pca_joint_config(stage_data: Dict[str, Any], base_path: Path, default
         systems=systems,
         base_dir=base_dir,
         selection=stage_data.get("selection", "protein and name CA"),
+        publication=PublicationConfig(**(stage_data.get("publication") or {})),
         n_components=int(stage_data.get("n_components", 10)),
         n_overlap=int(stage_data.get("n_overlap", 10)),
         stride=int(stage_data.get("stride", 1)),

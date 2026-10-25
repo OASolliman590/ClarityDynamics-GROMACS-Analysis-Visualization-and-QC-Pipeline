@@ -332,3 +332,69 @@ class PCAParser:
             logger.error(f"Error reading PDB file {file_path}: {e}")
             return [], [], []
     
+
+    def parse_publication_manifest(self, file_path: Path) -> Dict:
+        """Read explicit imported projection/basis and diagnostic contracts.
+
+        Each state names a projections CSV (PC1, PC2, optional PC3), an
+        eigenvalues XVG, basis_id, basis_verified, basis_source and unit.
+        Diagnostic CSV values require explicit compatible=True and provenance;
+        window/split-half values are never inferred from filenames.
+        """
+        import json
+        import pandas as pd
+        from .publication import diagnostic, DIAGNOSTICS
+
+        states, records = [], []
+        complete = True
+        try:
+            manifest = json.loads(Path(file_path).read_text())
+            names = set()
+            for item in manifest.get('states', []):
+                name, source = 'unknown', file_path
+                try:
+                    name = str(item['name'])
+                    if name in names:
+                        raise ValueError(f'Duplicate PCA state name: {name}')
+                    names.add(name)
+                    source = Path(file_path).parent / item['projections']
+                    frame = pd.read_csv(source)
+                    columns = [c for c in ('PC1', 'PC2', 'PC3') if c in frame]
+                    if columns[:2] != ['PC1', 'PC2'] or frame.empty:
+                        raise ValueError(f'{name}: PC1 and PC2 samples are required')
+                    values = frame[columns].to_numpy(dtype=float)
+                    if not np.isfinite(values).all():
+                        raise ValueError(f'{name}: projection samples must be finite')
+                    spectrum_path = Path(file_path).parent / item['eigenvalues'] if item.get('eigenvalues') else None
+                    eigenvalues = self.parse_xvg_single(spectrum_path)[2] if spectrum_path else []
+                    states.append(dict(name=name, projections={c: frame[c].astype(float).tolist() for c in columns},
+                        eigenvalues=eigenvalues, basis_id=item.get('basis_id'),
+                        basis_verified=item.get('basis_verified') is True, basis_source=item.get('basis_source', ''),
+                        source=str(source), eigenvalue_source=str(spectrum_path or ''), unit=item.get('unit', 'source coordinate units')))
+                except (OSError, ValueError, KeyError, TypeError) as exc:
+                    complete = False
+                    records.append(diagnostic('projection_inputs', reason=f'PCA state unavailable: {exc}',
+                                              state_pair=name, source=str(source)))
+            if manifest.get('diagnostics'):
+                source = Path(file_path).parent / manifest['diagnostics']
+                try:
+                    frame = pd.read_csv(source).fillna('')
+                except (OSError, ValueError) as exc:
+                    records.append(diagnostic('diagnostic_inputs', reason=f'Optional diagnostic table unavailable: {exc}', source=str(source)))
+                    frame = pd.DataFrame()
+                for row in frame.to_dict('records'):
+                    metric = row.get('metric')
+                    if metric not in DIAGNOSTICS:
+                        continue
+                    value = pd.to_numeric(row.get('value'), errors='coerce')
+                    valid = (str(row.get('compatible')).lower() == 'true' and bool(row.get('source'))
+                             and np.isfinite(value) and 0 <= value <= 1)
+                    if metric == 'window_sensitivity' and not row.get('window'):
+                        valid = False
+                    records.append(diagnostic(metric, float(value) if valid else None,
+                        reason='' if valid else 'Requires a finite fraction, compatible subspace, provenance and dedicated window when applicable',
+                        state_pair=row.get('state_pair', ''), window=row.get('window', ''), source=row.get('source', str(source))))
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            records.append(diagnostic('publication_inputs', reason=f'Invalid publication manifest: {exc}', source=str(file_path)))
+            complete = False
+        return {'states': states, 'diagnostics': records, 'complete': complete}

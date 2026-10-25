@@ -16,6 +16,51 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
+CANONICAL_COMPONENTS = ('VDWAALS', 'EEL', 'EGB', 'ESURF', 'GGAS', 'GSOLV', 'TOTAL')
+
+
+def _canonical_component_name(name: str) -> Optional[str]:
+    """Map CSV/DAT spellings to the stable publication component vocabulary."""
+    token = re.sub(r"[^A-Z]", "", str(name).upper())
+    if token.startswith('D') and token[1:] in CANONICAL_COMPONENTS:
+        token = token[1:]
+    if token == 'GTOTAL':
+        token = 'TOTAL'
+    return token if token in CANONICAL_COMPONENTS else None
+
+
+def _canonical_component_payload(delta_components: Dict, frame_data: Optional[pd.DataFrame], binding_energy: Optional[Dict] = None) -> Dict:
+    inputs = dict(delta_components)
+    for name, value in (binding_energy or {}).items():
+        canonical = _canonical_component_name(name)
+        if canonical and not any(_canonical_component_name(existing) == canonical for existing in inputs):
+            inputs[name] = {'value': value}
+    payload = {}
+    for original, values in inputs.items():
+        canonical = _canonical_component_name(original)
+        if canonical is None:
+            continue
+        samples = None
+        if frame_data is not None:
+            column = next((c for c in frame_data.columns if _canonical_component_name(c) == canonical), None)
+            if column is not None:
+                samples = pd.to_numeric(frame_data[column], errors='coerce').dropna()
+        if samples is not None and len(samples):
+            mean = float(samples.mean())
+            sample_sd = float(samples.std(ddof=1)) if len(samples) > 1 else None
+            n = int(len(samples))
+            uncertainty = 'saved_sample_sd' if n > 1 else 'unavailable'
+        else:
+            mean = float(values.get('value', 0.0))
+            sample_sd = float(values['std_dev']) if values.get('std_dev') is not None else None
+            n = int(values.get('n', 0))
+            uncertainty = 'reported_frame_sd' if values.get('std_dev') is not None else 'unavailable'
+        payload[canonical] = {
+            'mean': mean, 'sample_sd': sample_sd, 'n': n, 'uncertainty': uncertainty,
+        }
+    return payload
+
+
 class MMPBSAParser:
     """
     Unified parser for MMPBSA files (CSV and DAT formats).
@@ -160,6 +205,7 @@ class MMPBSAParser:
             
             result = {
                 'delta_components': delta_components,
+                'canonical_components': _canonical_component_payload(delta_components, None, binding_energy),
                 'binding_energy': binding_energy,
                 'entropy': entropy,
                 'metadata': metadata
@@ -517,6 +563,7 @@ class MMPBSAParser:
             if 'Frame #' not in df.columns:
                 logger.error(f"CSV file {file_path} does not contain 'Frame #' column")
                 return None
+            df['Frame #'] = pd.to_numeric(df['Frame #'], errors='coerce')
             
             # Convert numeric columns
             numeric_cols = [col for col in df.columns if col != 'Frame #']
@@ -544,12 +591,14 @@ class MMPBSAParser:
             if 'TOTAL' in df.columns:
                 binding_energy['TOTAL'] = df['TOTAL'].mean()
             
+            frame_data = df.copy()
             return {
                 'delta_components': delta_components,
+                'canonical_components': _canonical_component_payload(delta_components, frame_data, binding_energy),
                 'binding_energy': binding_energy,
                 'entropy': {},  # CSV typically doesn't have entropy
                 'metadata': {'num_frames': len(df)},
-                'frame_data': df.copy(),
+                'frame_data': frame_data,
             }
             
         except Exception as e:
@@ -570,6 +619,8 @@ class MMPBSAParser:
             frame_chunks = []
             
             for chunk in chunks:
+                if 'Frame #' in chunk.columns:
+                    chunk['Frame #'] = pd.to_numeric(chunk['Frame #'], errors='coerce')
                 numeric_cols = [col for col in chunk.columns if col != 'Frame #']
                 for col in numeric_cols:
                     chunk[col] = pd.to_numeric(chunk[col], errors='coerce')
@@ -606,12 +657,14 @@ class MMPBSAParser:
                 if values:
                     binding_result[key] = np.mean(values)
             
+            frame_data = pd.concat(frame_chunks, ignore_index=True) if frame_chunks else None
             return {
                 'delta_components': delta_result,
+                'canonical_components': _canonical_component_payload(delta_result, frame_data, binding_result),
                 'binding_energy': binding_result,
                 'entropy': {},
                 'metadata': {'num_frames': frame_count},
-                'frame_data': pd.concat(frame_chunks, ignore_index=True) if frame_chunks else None,
+                'frame_data': frame_data,
             }
             
         except Exception as e:

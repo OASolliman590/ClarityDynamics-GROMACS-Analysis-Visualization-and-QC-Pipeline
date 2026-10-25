@@ -338,3 +338,123 @@ CONFIG=my_pipeline.yaml ./run_pipeline.sh --dry-run
 - Set `paths.output_root` to project storage.
 - Keep project YAMLs free of personal absolute paths when sharing publicly.
 - Store system-specific private paths in local, non-committed configs.
+
+## Publication PCA and MM/GBSA reports
+
+The PCA, joint PCA, and MM/GBSA analyzers add a `publication/` directory by
+default. Existing figures and filenames remain available. Publication figures
+use a white theme and a consistent palette, with interactive HTML, SVG, PNG at
+2× resolution, and PDF. Static exports require working Kaleido/Chrome (see
+`plotly_get_chrome` or set `BROWSER_PATH`). Each format's actual success or failure
+is recorded in JSON; a missing exporter does not prevent HTML or source tables.
+
+Use the same `publication` block in a direct PCA/MMGBSA YAML file or beneath the
+`pca`, `pca_batch` defaults, `pca_joint`, or `mmpbsa` stage in pipeline YAML:
+
+```yaml
+publication:
+  enabled: true
+  subdirectory: publication
+  formats: [html, svg, png, pdf]
+  scree_components: 10
+  moving_window: 11
+  top_n: 15
+```
+
+`moving_window` is a positive odd sample count. `top_n: 8` selects the eight most
+negative residue TOTAL contributions; `top_n: all` retains every parsed residue.
+The default selects 15, with stable sorting from most negative upward. The
+all-residues figure grows with its input; HTML supports inspecting residue labels.
+`enabled: false` suppresses only the additional publication outputs.
+
+| Stage | Figures | Numerical sources and metadata |
+|---|---|---|
+| PCA / joint PCA | `pca_composite` with PC1–PC2, PC1–PC2–PC3, scree bars and cumulative variance | `pca_projections.csv`, `pca_variance.csv`, `pca_diagnostics.csv`, `pca_metadata.json` |
+| PCA with incompatible bases | Independent `pca_state_N` composites; shared overlay recorded unavailable | Same source/diagnostic tables and reason |
+| MM/GBSA | `components`, per-system `saved_total_*`, `residues` | Component, saved-sample, selected residue CSV sources and publication JSON metadata |
+
+PCA fractions use the full eigenvalue denominator, even when only ten leading
+components are shown. Native joint PCA records a fingerprint of the shared
+basis and centering reference. Imported PCA files do **not** acquire shared-basis
+status from matching filenames or equal numbers of atoms. Provide an explicit
+`publication_inputs.json` in `base_dir` (`publication.pca_manifest` changes its
+name) to attest externally prepared states:
+
+```json
+{
+  "states": [
+    {"name": "Apo", "projections": "apo_shared.csv", "eigenvalues": "eigenvals_shared.xvg",
+     "basis_id": "joint-fit-001", "basis_verified": true, "basis_source": "joint-fit-log.json", "unit": "nm"},
+    {"name": "Bound", "projections": "bound_shared.csv", "eigenvalues": "eigenvals_shared.xvg",
+     "basis_id": "joint-fit-001", "basis_verified": true, "basis_source": "joint-fit-log.json", "unit": "nm"}
+  ],
+  "diagnostics": "publication_diagnostics.csv"
+}
+```
+
+Each projections CSV has `PC1,PC2,PC3` columns in saved-sample order. PC3 may be
+absent; the 3D panel then states its unavailability. Eigenvalues are two-column
+XVG component/eigenvalue data containing the **full** spectrum, not a truncated
+spectrum renormalized to 100%. The manifest paths resolve relative to the manifest.
+Shared overlays require all states to attest the same verified basis identifier,
+include basis provenance, and agree on variance fractions and units. The attestation
+must describe the same eigenvectors, atom order, fitting reference and centering;
+ClarityDynamics cannot independently reconstruct those facts from projection CSVs.
+Single-state composites do not require a multi-state attestation. Legacy PCA inputs
+are also supported, but their filenames alone never authorize a shared overlay.
+
+Optional dedicated diagnostic CSV rows have columns
+`metric,value,compatible,state_pair,window,source`. Supported metric keys are
+`rmsip`, `window_sensitivity`, `split_half_rmsip`, and `cosine_content`. Values
+must be finite fractions in [0,1], with `compatible: true` and a nonempty source.
+Window sensitivity also requires a window label. For example:
+
+```csv
+metric,value,compatible,state_pair,window,source
+rmsip,0.8,true,Apo|Bound,first 10 PCs,overlap-log.csv
+window_sensitivity,0.7,true,Bound,0-10 ns,window-overlap.csv
+split_half_rmsip,0.9,true,Bound,first half|second half,split-overlap.csv
+```
+
+Native joint RMSIP comes from compatible aligned subspaces. Parsed `cc_all.xvg`
+cosine values are included when available. Every missing diagnostic remains in
+the long summary with `status=unavailable`, a reason and no numeric value. The
+schema includes metric, value, unit, status, reason, state pair, window and source.
+PCA projections describe sampled coordinate covariance. They do not establish
+equilibrium populations, a free-energy landscape, or convergence.
+
+The MM/GBSA component composite distinguishes detailed VDWAALS/EEL/EGB/ESURF
+terms, grouped GGAS/GSOLV sums, and the TOTAL endpoint estimate. They are
+algebraically related quantities, not independent evidence. Panels retain independent
+scales. A single results file uses saved-sample standard deviation (ddof=1);
+independently aggregated replicate files use dispersion of replicate means.
+Neither is a claim of experimental binding free energy.
+
+Saved TOTAL traces show every estimate, a centered moving mean (partial windows
+at the ends), and the overall mean. Replicates are kept separate when smoothing.
+Missing TOTAL samples retain their original positions as visible gaps, with sample/frame identities recorded in metadata. A single valid saved sample retains its mean but has unavailable sample SD.
+The default x-axis is **Saved sample index**. Frame numbers alone never supply time.
+To use physical time, give a validated one-to-one frame/time map in the same
+publication block; frame identities must match the retained results, and the mapped
+times must be finite and strictly increasing in saved-sample order:
+
+```yaml
+publication:
+  moving_window: 5
+  top_n: all
+  sampling_metadata:
+    Bound:
+      validated: true
+      frames: [10, 20, 30]
+      time: [0.1, 0.2, 0.3]
+      unit: ns
+      source: saved-frame-map.csv
+```
+
+Invalid or incomplete metadata leaves the sample-index axis in place and records
+why physical time is unavailable. Negative residue values are favorable within
+the endpoint decomposition. Optional missing decomposition, saved samples, or PCA
+diagnostics are recorded without aborting independent outputs. Source CSV and JSON
+files sit beside the figures and record the actual numerical values, selection,
+smoothing window, availability, units, state labels, and input provenance. No MD,
+docking, or energy calculations are performed by this reporting layer.

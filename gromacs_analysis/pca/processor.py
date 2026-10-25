@@ -512,3 +512,8 @@ class PCAProcessor:
                     all_data['fel'][pair_key] = fel_data
         
         return all_data
+
+    def build_publication_payload(self, all_data: Dict, detected_files: Dict) -> Dict:
+        """Prepare numerical sources and explicit scientific availability records."""
+        from .publication import imported_payload
+        return imported_payload(self, all_data, detected_files)

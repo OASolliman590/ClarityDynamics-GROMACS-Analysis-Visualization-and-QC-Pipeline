@@ -106,6 +106,13 @@ md_compare:
   #   - [255, 127, 14]
 
 mmpbsa:
+  # Additional publication figures; legacy output is retained.
+  publication:
+    enabled: true
+    formats: [html, svg, png, pdf]
+    top_n: 15  # positive integer or all
+    moving_window: 11  # positive odd saved-sample count
+    scree_components: 10
   enabled: true
   base_dir: "./3-Results_Holo"
   output_dir: "./analysis_outputs/mmpbsa"
@@ -124,6 +131,13 @@ mmpbsa:
       replicates: 3
 
 pca:
+  # Additional publication figures; legacy output is retained.
+  publication:
+    enabled: true
+    formats: [html, svg, png, pdf]
+    top_n: 15  # positive integer or all
+    moving_window: 11  # positive odd saved-sample count
+    scree_components: 10
   enabled: false
   base_dir: "./2-PCA"
   output_dir: "./analysis_outputs/pca"
@@ -212,6 +226,13 @@ pca_batch:
 # Joint PCA: all systems fitted together and projected on ONE set of eigenvectors,
 # with RMSIP subspace overlap between systems (quantitative cross-system comparison).
 pca_joint:
+  # Additional publication figures; legacy output is retained.
+  publication:
+    enabled: true
+    formats: [html, svg, png, pdf]
+    top_n: 15  # positive integer or all
+    moving_window: 11  # positive odd saved-sample count
+    scree_components: 10
   enabled: false
   base_dir: "./1-MD/analysis"
   output_dir: "./analysis_outputs/pca_joint"

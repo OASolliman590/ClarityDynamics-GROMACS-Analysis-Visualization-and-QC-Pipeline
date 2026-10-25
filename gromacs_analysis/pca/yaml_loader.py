@@ -19,6 +19,7 @@ from .config import (
     PCATerminalDetectionConfig,
 )
 from ..md.config import PlotConfig
+from ..utils.publication import PublicationConfig
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +167,7 @@ def load_yaml_config(yaml_path: Path) -> PCAConfig:
             fel=fel_config,
             clustering=clustering_config,
             run_gromacs=run_gromacs_config,
+            publication=PublicationConfig(**(data.get('publication') or {})),
         )
         
         logger.info(f"Loaded PCA configuration from {yaml_path}")
@@ -234,6 +236,17 @@ n_pcs: 10
 #     enabled: true
 #     max_ns: 100
 #     step_ns: 10
+
+# Additional figures and numerical sources below output_dir/publication
+publication:
+  enabled: true
+  subdirectory: publication
+  formats: [html, svg, png, pdf]
+  scree_components: 10
+  moving_window: 11  # positive odd saved-sample count
+  top_n: 15         # positive integer or all
+  pca_manifest: publication_inputs.json
+  sampling_metadata: {}  # validated frame/time mapping; see USAGE.md
 
 # Plot configuration
 plot_config:
