@@ -9,6 +9,7 @@ from typing import List, Optional
 from pathlib import Path
 
 from ..md.config import PlotConfig
+from ..utils.publication import PublicationConfig
 
 
 @dataclass
@@ -71,6 +72,7 @@ class MMPBSAConfig:
     # Exclude frames before this "Frame #" (e.g. the equilibration start from md/data/equilibration.json).
     # Applies to frame-level (CSV) results; DAT summaries cannot be re-averaged and are left unchanged.
     start_frame: Optional[int] = None
+    publication: PublicationConfig = field(default_factory=PublicationConfig)
     
     def __post_init__(self):
         """Validate configuration"""

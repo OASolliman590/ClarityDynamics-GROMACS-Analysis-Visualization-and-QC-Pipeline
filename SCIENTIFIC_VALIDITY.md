@@ -74,3 +74,36 @@ These are matters of experimental design. Code alone cannot resolve them.
 8. **Legacy scripts.** `md_analysis_base.py`, `holo_md_analysis.py` and
    `apo_md_analysis.py` are deprecated (they warn when run) and keep their original
    z-score outlier removal. Use the `gromacs_analysis` package.
+
+## Publication reporting
+
+PCA and MM/GBSA now write additional publication composites and CSV/JSON sources
+by default under `publication/`; legacy plots remain available. HTML, SVG, PNG
+and PDF are attempted separately and unavailable exports include a reason.
+The scree bars and cumulative curve share a percentage scale, without dual axes.
+
+PCA variance fractions use the full covariance/eigenvalue denominator. Imported
+multi-state projections require an explicit attestation of one verified basis,
+including provenance; filenames alone cannot verify common eigenvectors, atom
+order, reference fitting or centering. Native joint PCA records a basis fingerprint.
+Projections represent sampled coordinate covariance, not equilibrium populations
+or a free-energy landscape. RMSIP requires compatible subspaces. Dedicated
+window and split-half results and parsed cosine values are included only when
+supported; unavailable diagnostics have no numeric value and carry a reason.
+
+MM/GBSA uses the canonical VDWAALS/EEL/EGB/ESURF/GGAS/GSOLV/TOTAL vocabulary.
+The first four are detailed terms, the next two grouped sums, and TOTAL the
+endpoint estimate. These are not independent energetic observations. The
+report uses the gmx_MMPBSA energy convention (kcal/mol) and records it in metadata.
+Within-file error bars are saved-sample SD (ddof=1), not replicate uncertainty;
+true replicate summaries use dispersion of replicate means. Saved TOTAL traces
+use sample index unless explicit validated metadata maps retained frames to
+finite, strictly increasing times. Smoothing is a centered moving mean with
+partial edge windows and configurable positive odd width (default 11); replicate
+boundaries are preserved. Residue panels select the 15 most negative parsed
+TOTAL values by default, support custom positive top-N and all-residues modes,
+and identify negative values as favorable within endpoint decomposition.
+
+`USAGE.md` documents the imported-input and validated-time contracts. Synthetic
+parser, plotter, analyzer and configuration tests verify these behaviors without
+production trajectories or molecular/energy calculations.

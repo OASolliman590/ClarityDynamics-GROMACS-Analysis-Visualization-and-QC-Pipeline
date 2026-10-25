@@ -77,7 +77,12 @@ class PCAJointAnalyzer:
         figures += self._save(self._density_figure(result), plots_dir, "joint_density_12")
         figures += self._save(self._rmsip_figure(result), plots_dir, "rmsip_heatmap")
         figures += self._save(self._scree_figure(result), plots_dir, "joint_scree")
+        publication = None
+        if self.config.publication.enabled:
+            from .publication import joint_payload, save_publication
+            publication = save_publication(joint_payload(result, self.config), out, self.config.publication)
         return {
+            "publication": publication,
             "success": True,
             "output_dir": str(out),
             "data_files": [str(p) for p in written],

@@ -16,7 +16,7 @@ from plotly.subplots import make_subplots
 from .config import MMPBSAConfig
 from ..utils.mpl_fallback import init_matplotlib
 from ..utils.figure_export import StaticExportUnavailable, write_static
-from ..utils.palette import categorical
+from ..utils.palette import APO_HEX, MUTED_HEX, categorical, mix
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,131 @@ class MMPBSAPlotter:
     def _system_color(self, system_name: str) -> str:
         if system_name not in self._slots:
             self._slots[system_name] = len(self._slots)
+        if 'APO' in system_name.upper():
+            return APO_HEX
         return categorical(self._slots[system_name])
+
+    def create_publication_energy_figure(self, payload: pd.DataFrame, system_name: str,
+                                         window: int = 11, x_label: str = 'Saved sample index') -> go.Figure:
+        """Plot saved TOTAL values, centered moving mean, and overall mean."""
+        fig = go.Figure()
+        if payload is None or payload.empty:
+            return fig
+        x_column = 'time' if 'time' in payload.columns else 'sample_index'
+        system_color = self._system_color(system_name)
+        if 'replicate' in payload.columns:
+            for replicate, data in payload.groupby('replicate', sort=False):
+                x_rep = data[x_column]
+                fig.add_trace(go.Scatter(x=x_rep, y=data['total'], mode='lines+markers',
+                                         name=f'Replicate {replicate} TOTAL',
+                                         line=dict(color=mix(system_color, '#ffffff', 0.45), width=1),
+                                         marker=dict(size=4, color=system_color)))
+                fig.add_trace(go.Scatter(x=x_rep, y=data['moving_mean'], mode='lines',
+                                         name=f'Replicate {replicate} centered mean (window {window})',
+                                         line=dict(color=system_color, width=2.5)))
+                fig.add_trace(go.Scatter(x=x_rep, y=data['overall_mean'], mode='lines',
+                                         name=f'Replicate {replicate} overall mean',
+                                         line=dict(color=MUTED_HEX, dash='dash')))
+            fig.update_layout(title=f'Saved-sample TOTAL energy · {system_name}', xaxis_title=x_label,
+                              yaxis_title='TOTAL (kcal/mol)', template='plotly_white',
+                              annotations=[dict(text=f'Centered moving window: {window} samples per replicate',
+                                                 x=0.99, y=0.98, xref='paper', yref='paper', showarrow=False,
+                                                 xanchor='right')])
+            return fig
+        x = payload[x_column]
+        fig.add_trace(go.Scatter(x=x, y=payload['total'], mode='lines+markers', name='Saved TOTAL',
+                                 line=dict(color=mix(system_color, '#ffffff', 0.45), width=1),
+                                 marker=dict(size=4, color=system_color),
+                                 hovertemplate='%{x}<br>TOTAL: %{y:.3f} kcal/mol<extra></extra>'))
+        fig.add_trace(go.Scatter(x=x, y=payload['moving_mean'], mode='lines',
+                                 name=f'Centered moving mean ({window})',
+                                 line=dict(color=system_color, width=2.5),
+                                 hovertemplate='%{x}<br>Moving mean: %{y:.3f} kcal/mol<extra></extra>'))
+        fig.add_trace(go.Scatter(x=x, y=payload['overall_mean'], mode='lines', name='Overall mean',
+                                 line=dict(color=MUTED_HEX, dash='dash'),
+                                 hovertemplate='Overall mean: %{y:.3f} kcal/mol<extra></extra>'))
+        fig.update_layout(title=f'Saved-sample TOTAL energy · {system_name}', xaxis_title=x_label,
+                          yaxis_title='TOTAL (kcal/mol)', template='plotly_white',
+                          annotations=[dict(text=f'Centered moving window: {window} samples', x=0.99, y=0.98,
+                                             xref='paper', yref='paper', showarrow=False, xanchor='right')])
+        return fig
+
+    @staticmethod
+    def create_publication_components_figure(payload: pd.DataFrame) -> go.Figure:
+        """Render one independent-scale component panel per system."""
+        systems = list(dict.fromkeys(payload['system'].tolist())) if payload is not None and not payload.empty else []
+        if not systems:
+            return go.Figure()
+        fig = make_subplots(rows=1, cols=len(systems), subplot_titles=systems, shared_yaxes=False,
+                            horizontal_spacing=min(0.12, 0.35 / max(1, len(systems))))
+        order = ['VDWAALS', 'EEL', 'EGB', 'ESURF', 'GGAS', 'GSOLV', 'TOTAL']
+        colors = {'raw': categorical(0), 'grouped': categorical(1), 'total': APO_HEX}
+        for col, system in enumerate(systems, 1):
+            system_rows = payload[payload['system'] == system]
+            subset = system_rows[system_rows.get('status', 'available') == 'available'].set_index('component')
+            names = [name for name in order if name in subset.index]
+            fig.add_trace(go.Bar(x=names, y=[subset.loc[n, 'mean'] for n in names],
+                                 error_y=dict(type='data', array=[subset.loc[n, 'sd'] for n in names], visible=True),
+                                 marker_color=[colors[subset.loc[n, 'group']] for n in names],
+                                 customdata=[[subset.loc[n, 'uncertainty']] for n in names],
+                                 hovertemplate='%{x}: %{y:.3f} kcal/mol<br>Dispersion: %{customdata[0]}<extra></extra>',
+                                 showlegend=False), row=1, col=col)
+            fig.add_hline(y=0, line=dict(color='#777777', dash='dot', width=1), row=1, col=col)
+            fig.update_xaxes(title_text='Energy term', row=1, col=col)
+            fig.update_yaxes(title_text='Mean (kcal/mol)', row=1, col=col)
+            uncertainty_names = {
+                'saved_sample_sd': 'saved-sample SD',
+                'replicate_sd': 'replicate SD',
+                'reported_frame_sd': 'reported frame SD',
+            }
+            kinds = [uncertainty_names[k] for k in subset['uncertainty'].dropna().unique()
+                     if k in uncertainty_names]
+            if any(subset['uncertainty'] == 'unavailable_single_replicate'):
+                kinds.append('replicate SD unavailable for n=1')
+            label = 'Error bars: ' + (', '.join(kinds) if kinds else 'dispersion unavailable')
+            missing = system_rows.loc[system_rows.get('status', 'available') == 'unavailable', 'component'].tolist()
+            if missing:
+                label += '<br>Unavailable components: ' + ', '.join(missing)
+            fig.add_annotation(
+                text=label, x=(col - 0.5) / len(systems), y=1.18, xref='paper', yref='paper',
+                showarrow=False, xanchor='center', yanchor='bottom', font=dict(size=12),
+            )
+
+        for group, label in (('raw', 'Raw energetic terms'), ('grouped', 'Grouped sums'), ('total', 'TOTAL endpoint estimate')):
+            fig.add_trace(go.Bar(x=[None], y=[None], name=label, marker_color=colors[group], showlegend=True))
+        fig.update_layout(title=dict(text='MM/GBSA energy components', x=0.5, y=0.98, yanchor='top'), template='plotly_white',
+                          barmode='group', showlegend=True,
+                          legend=dict(orientation='h', y=-0.22, x=0.5, xanchor='center'),
+                          margin=dict(t=150, b=130))
+        return fig
+
+    def create_publication_residue_figure(self, payloads: Dict[str, pd.DataFrame]) -> go.Figure:
+        """Render residue contributions in independently scaled system panels."""
+        systems = list(payloads)
+        if not systems:
+            return go.Figure()
+        fig = make_subplots(rows=1, cols=len(systems), subplot_titles=systems,
+                            shared_yaxes=False, horizontal_spacing=min(0.12, 0.35 / max(1, len(systems))))
+        for col, system in enumerate(systems, 1):
+            data = payloads[system]
+            if data is None or data.empty:
+                continue
+            labels = data['Residue'].astype(str).tolist()
+            fig.add_trace(go.Bar(y=labels, x=data['TOTAL Avg.'], orientation='h',
+                                 marker_color=self._system_color(system),
+                                 hovertemplate='%{y}<br>TOTAL: %{x:.3f} kcal/mol<extra></extra>'), row=1, col=col)
+            fig.add_vline(x=0, line=dict(color='#777777', dash='dot', width=1), row=1, col=col)
+            values = pd.to_numeric(data['TOTAL Avg.'], errors='coerce').dropna()
+            low = min(float(values.min()), 0.0)
+            high = max(float(values.max()), 0.0)
+            pad = max((high - low) * 0.08, 0.25)
+            fig.update_xaxes(title_text='TOTAL contribution (kcal/mol)', range=[low - pad, high + pad], row=1, col=col)
+            fig.update_yaxes(title_text='Residue', autorange='reversed', row=1, col=col)
+        sizes = [len(df) for df in payloads.values() if df is not None]
+        fig.update_layout(title='Favorable residue decomposition (negative = favorable within endpoint decomposition)',
+                          template='plotly_white', showlegend=False, height=max(500, 28 * max(sizes, default=0)),
+                          width=max(1000, 380 * len(systems)), margin=dict(l=130, r=45, t=90, b=70))
+        return fig
     
     def create_component_plot(self, results_data: Dict, system_name: str) -> go.Figure:
         """

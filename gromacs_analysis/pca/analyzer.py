@@ -357,6 +357,12 @@ class PCAAnalyzer:
                 except Exception as e:
                     logger.error(f"  ✗ Error creating clustering for {pair_key}: {e}")
         
+        publication = None
+        if self.config.publication.enabled:
+            from .publication import save_publication
+            payload = self.processor.build_publication_payload(all_data, detected_files)
+            publication = save_publication(payload, self.config.output_dir, self.config.publication, self.plotter)
+
         # Generate summary
         logger.info("\n[4/4] Generating summary...")
         summary_file = self._generate_summary_report(plots_created, ligand_name)
@@ -376,6 +382,7 @@ class PCAAnalyzer:
             'ligand_name': ligand_name,
             'summary_file': str(summary_file) if summary_file else None,
             'gromacs_run': gromacs_result,
+            'publication': publication,
         }
     
     def _create_output_dirs(self):

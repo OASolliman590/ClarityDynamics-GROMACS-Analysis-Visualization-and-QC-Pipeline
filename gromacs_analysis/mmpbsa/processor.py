@@ -12,7 +12,7 @@ import pandas as pd
 import numpy as np
 
 from .config import MMPBSAConfig, MMPBSASystemConfig
-from .parser import MMPBSAParser
+from .parser import MMPBSAParser, _canonical_component_name, _canonical_component_payload
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +39,163 @@ class MMPBSAProcessor:
         self.parser = MMPBSAParser(debug=False)
         self._frames_used: List[Optional[int]] = []
         logger.info("MMPBSAProcessor initialized")
+
+    @staticmethod
+    def publication_component_payload(all_data: Dict[str, Dict]) -> pd.DataFrame:
+        """Return long-form component means and dispersion with scientific grouping."""
+        component_order = ('VDWAALS', 'EEL', 'EGB', 'ESURF', 'GGAS', 'GSOLV', 'TOTAL')
+        legacy_names = {name: f'Δ{name}' for name in component_order}
+        rows = []
+        for system_name, system_data in all_data.items():
+            results = system_data.get('results') or {}
+            components = results.get('canonical_components') or results.get('delta_components') or {}
+            for name in component_order:
+                value = components.get(name, components.get(legacy_names[name]))
+                group = 'raw' if name in component_order[:4] else 'grouped' if name in ('GGAS', 'GSOLV') else 'total'
+                if not value:
+                    rows.append({
+                        'system': system_name, 'component': name, 'group': group, 'mean': None,
+                        'sd': None, 'uncertainty': None, 'status': 'unavailable',
+                        'n': 0, 'reason': f'{name} was not present in the parsed results.',
+                    })
+                    continue
+                uncertainty = value.get('uncertainty')
+                if uncertainty == 'between_replicates' and value.get('n', 0) > 1:
+                    uncertainty = 'replicate_sd'
+                elif results.get('mode') == 'replicate' and value.get('n', 0) <= 1:
+                    uncertainty = 'unavailable_single_replicate'
+                elif uncertainty == 'frame_sd':
+                    uncertainty = 'saved_sample_sd'
+                elif not uncertainty:
+                    uncertainty = 'saved_sample_sd' if results.get('mode') == 'single' else 'unavailable_single_replicate'
+                spread = value.get('std', value.get('sample_sd', value.get('std_dev', 0.0)))
+                if uncertainty == 'unavailable_single_replicate':
+                    spread = None
+                mean = value.get('mean', value.get('value'))
+                if mean is None or not np.isfinite(float(mean)) or (
+                    spread is not None and not np.isfinite(float(spread))
+                ):
+                    rows.append({
+                        'system': system_name, 'component': name, 'group': group, 'mean': None,
+                        'sd': None, 'n': value.get('n', 0), 'uncertainty': None,
+                        'status': 'unavailable', 'reason': 'Component mean or dispersion is not finite.',
+                    })
+                    continue
+                rows.append({
+                    'system': system_name, 'component': name, 'group': group,
+                    'mean': mean,
+                    'sd': spread,
+                    'n': value.get('n', 0),
+                    'uncertainty': uncertainty,
+                    'status': 'available', 'reason': None,
+                })
+        return pd.DataFrame(rows, columns=['system', 'component', 'group', 'mean', 'sd', 'n', 'uncertainty', 'status', 'reason'])
+
+    @staticmethod
+    def publication_energy_payload(
+        results: Dict, window: int = 11, sampling_metadata: Optional[Dict] = None,
+    ) -> Dict[str, object]:
+        """Prepare saved TOTAL samples and centered mean without inferring time."""
+        if isinstance(window, bool) or not isinstance(window, int) or window < 1 or window % 2 == 0:
+            raise ValueError('moving window must be a positive odd integer')
+        frame_data = results.get('frame_data')
+        if frame_data is None or frame_data.empty:
+            return {'status': 'unavailable', 'reason': 'No saved frame-level results are available.'}
+        total_column = next((c for c in frame_data.columns if _canonical_component_name(c) == 'TOTAL'), None)
+        if total_column is None:
+            return {'status': 'unavailable', 'reason': 'Saved frame-level results do not contain TOTAL.'}
+        all_total_values = pd.to_numeric(frame_data[total_column], errors='coerce')
+        invalid_sample_count = int((~np.isfinite(all_total_values.to_numpy())).sum())
+        if np.isinf(all_total_values.to_numpy()).any():
+            return {
+                'status': 'unavailable',
+                'reason': 'Saved TOTAL samples include non-finite values; no trace was produced.',
+                'invalid_sample_count': invalid_sample_count,
+            }
+        groups = list(frame_data.groupby('Replicate', sort=False)) if 'Replicate' in frame_data.columns else [(None, frame_data)]
+        sample_frames = []
+        for replicate, group in groups:
+            total_values = pd.to_numeric(group[total_column], errors='coerce')
+            valid_rows = total_values.notna()
+            total = total_values.loc[valid_rows].reset_index(drop=True)
+            if total.empty:
+                continue
+            samples = pd.DataFrame({
+                'sample_index': np.arange(1, len(total) + 1), 'total': total,
+                'moving_mean': total.rolling(window=window, center=True, min_periods=1).mean().values,
+                'overall_mean': float(total.mean()),
+            })
+            if 'Frame #' in group.columns:
+                samples['frame'] = group.loc[valid_rows, 'Frame #'].reset_index(drop=True).to_numpy()
+            if replicate is not None:
+                samples['replicate'] = replicate
+            sample_frames.append(samples)
+        if not sample_frames:
+            return {
+                'status': 'unavailable', 'reason': 'Saved TOTAL samples contain no finite values.',
+                'invalid_sample_count': invalid_sample_count,
+            }
+        samples = pd.concat(sample_frames, ignore_index=True)
+        axis = 'Saved sample index'
+        metadata = sampling_metadata or {}
+        physical_time = {
+            'status': 'unavailable',
+            'reason': 'Validated sampling metadata was not supplied.',
+        }
+        if metadata.get('validated') is True:
+            times = metadata.get('time')
+            frames = metadata.get('frames')
+            source = metadata.get('source')
+            if not isinstance(source, str) or not source.strip():
+                physical_time['reason'] = 'Validated sampling metadata must identify its source.'
+            elif frames is None or times is None or not metadata.get('unit') or len(times) != len(frames):
+                physical_time['reason'] = 'Validated sampling metadata requires matching frames, time values, and a unit.'
+            elif not pd.Series(frames).is_unique:
+                physical_time['reason'] = 'Frame identifiers must be unique for a one-to-one time mapping.'
+            else:
+                time_values = pd.to_numeric(pd.Series(times), errors='coerce')
+                if not time_values.notna().all() or not np.isfinite(time_values).all() or not (np.diff(time_values.to_numpy()) > 0).all():
+                    physical_time['reason'] = 'Mapped time values must be finite and strictly increasing.'
+                else:
+                    valid_mapping = True
+                    for replicate, group in groups:
+                        if 'Frame #' not in group.columns or group['Frame #'].tolist() != list(frames):
+                            valid_mapping = False
+                            break
+                    if valid_mapping and 'frame' in samples:
+                        time_lookup = dict(zip(frames, time_values))
+                        samples['time'] = samples['frame'].map(time_lookup)
+                        axis = f"Time ({metadata['unit']})"
+                        physical_time = {
+                            'status': 'available', 'unit': metadata['unit'], 'source': source,
+                        }
+                    else:
+                        physical_time['reason'] = 'Sampling frame identifiers do not match saved result frames in order.'
+        return {
+            'status': 'available', 'samples': samples, 'x': 'time' if 'time' in samples else 'sample_index',
+            'x_label': axis, 'window': window,
+            'physical_time': physical_time,
+            'invalid_sample_count': invalid_sample_count,
+            'overall_mean': {str(row['replicate']): float(row['overall_mean']) for _, row in samples.drop_duplicates('replicate').iterrows()}
+                if 'replicate' in samples else float(samples['overall_mean'].iloc[0]),
+            'source': results.get('source'),
+        }
+
+    @staticmethod
+    def publication_residue_payload(decomp_data: pd.DataFrame, top_n=15) -> pd.DataFrame:
+        """Select favorable TOTAL residue contributions with deterministic tie order."""
+        if top_n != 'all' and (isinstance(top_n, bool) or not isinstance(top_n, int) or top_n < 1):
+            raise ValueError("top_n must be a positive integer or 'all'")
+        if decomp_data is None or decomp_data.empty or 'TOTAL Avg.' not in decomp_data.columns:
+            return pd.DataFrame(columns=[] if decomp_data is None else decomp_data.columns)
+        selected = decomp_data.copy()
+        selected['TOTAL Avg.'] = pd.to_numeric(selected['TOTAL Avg.'], errors='coerce')
+        selected = selected.dropna(subset=['TOTAL Avg.']).sort_values(
+            ['TOTAL Avg.'] + (['Residue'] if 'Residue' in selected else []), kind='mergesort'
+        )
+        if top_n != 'all':
+            selected = selected.head(top_n)
+        return selected.reset_index(drop=True)
     
     def load_all_data(self) -> Dict[str, Dict]:
         """
@@ -268,6 +425,7 @@ class MMPBSAProcessor:
         for file_path in files:
             data = self.parser.parse_results(file_path, file_format='auto')
             if data:
+                data['source'] = str(file_path)
                 if not data.get('entropy'):
                     data['entropy'] = self._entropy_from_sibling_dat(file_path)
                 if self.config.start_frame is not None:
@@ -322,6 +480,7 @@ class MMPBSAProcessor:
         updated['delta_components'] = delta
         updated['binding_energy'] = binding
         updated['frame_data'] = kept.copy()
+        updated['canonical_components'] = _canonical_component_payload(delta, kept, binding)
         updated.setdefault('metadata', {})['frames_used'] = int(len(kept))
         logger.info(f"{file_path.name}: using {len(kept)} frames with Frame # >= {start}")
         return updated
@@ -355,6 +514,7 @@ class MMPBSAProcessor:
         
         # Collect all delta component values
         delta_components = {}
+        canonical_components = {}
         binding_energy = {'GGAS': [], 'GSOLV': [], 'TOTAL': []}
         entropy = {'interaction_entropy': [], 'c2_entropy': []}
         
@@ -364,6 +524,11 @@ class MMPBSAProcessor:
                 if comp_name not in delta_components:
                     delta_components[comp_name] = []
                 delta_components[comp_name].append(comp_data['value'])
+
+            for comp_name, comp_data in data.get('canonical_components', {}).items():
+                canonical_components.setdefault(comp_name, []).append(
+                    comp_data.get('mean', comp_data.get('value'))
+                )
             
             # Binding energy
             for key in ['GGAS', 'GSOLV', 'TOTAL']:
@@ -391,6 +556,10 @@ class MMPBSAProcessor:
             for comp_name, values in delta_components.items()
             if values
         }
+        canonical_result = {
+            comp_name: self._replicate_summary(values)
+            for comp_name, values in canonical_components.items() if values
+        }
         binding_result = {
             key: self._replicate_summary(values)
             for key, values in binding_energy.items()
@@ -411,7 +580,12 @@ class MMPBSAProcessor:
         
         return {
             'delta_components': delta_result,
+            'canonical_components': canonical_result,
             'binding_energy': binding_result,
+            'replicate_sources': {
+                str(index): data['source']
+                for index, data in enumerate(parsed_data, start=1) if data.get('source')
+            },
             'entropy': entropy_result,
             'n_replicates': n_replicates,
             'mode': 'replicate',
@@ -478,6 +652,8 @@ class MMPBSAProcessor:
         return {
             'delta_components': delta_result,
             'binding_energy': binding_result,
+            'canonical_components': data.get('canonical_components', {}),
+            'source': data.get('source'),
             'entropy': entropy_result,
             'n_replicates': 1,
             'mode': 'single',
